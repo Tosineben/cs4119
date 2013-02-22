@@ -1,6 +1,0 @@
-C:\src\columbia\cs4119\Assignment2\Assignment2\bin\Debug\Assignment2.exe.config
-C:\src\columbia\cs4119\Assignment2\Assignment2\bin\Debug\Assignment2.exe
-C:\src\columbia\cs4119\Assignment2\Assignment2\bin\Debug\Assignment2.pdb
-C:\src\columbia\cs4119\Assignment2\Assignment2\obj\Debug\Assignment2.csprojResolveAssemblyReference.cache
-C:\src\columbia\cs4119\Assignment2\Assignment2\obj\Debug\Assignment2.exe
-C:\src\columbia\cs4119\Assignment2\Assignment2\obj\Debug\Assignment2.pdb
