@@ -1,4 +1,6 @@
-import java.util.ArrayList;
+import Enums.*;
+
+import java.util.Collection;
 
 public class ServerPacketContentCreator {
 
@@ -7,7 +9,7 @@ public class ServerPacketContentCreator {
         return String.format("acklogin,{0}", sf);
     }
 
-    public String ClientList(ArrayList<ClientModel> clients) {
+    public String ClientList(Collection<ClientModel> clients) {
         StringBuilder builder = new StringBuilder("ackls");
         for (ClientModel client : clients) {
             builder.append(",");
@@ -28,13 +30,13 @@ public class ServerPacketContentCreator {
         return String.format("ackchoose,{0},{1}", name, adf);
     }
 
-    public String AckRecieve(int packetId) {
-        return String.format("ack,{0}", packetId);
+    public String GameState(String state) {
+        return String.format("play,{0}", state);
     }
 
-    //TODO; game state should be an object
-    public String GameState(String currentState) {
-        return String.format("play,{0}", currentState);
+    public String AckPlay(boolean occupiedNotOutOfTurn) {
+        String ot = occupiedNotOutOfTurn ? "O" : "T";
+        return String.format("ackplay,{0}", ot);
     }
 
     public String GameResult(GameOutcome outcome) {
