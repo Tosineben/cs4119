@@ -1,12 +1,90 @@
-import java.io.BufferedReader;
+import Enums.RequestStatus;
+
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.net.DatagramPacket;
 import java.net.DatagramSocket;
-import java.net.SocketException;
-import java.util.Calendar;
 
 public class Server {
+
+    private static void HandleLogin(ServerHelper helper, String[] msgParts) throws IOException {
+        if (msgParts.length != 4) {
+            System.out.print("Invalid request.");
+            return;
+        }
+
+        String name = msgParts[2];
+        int port;
+        try {
+            port = Integer.parseInt(msgParts[3]);
+        }
+        catch (NumberFormatException e) {
+            System.out.print("Invalid request.");
+            return;
+        }
+
+        helper.Login(name, port);
+    }
+
+    private static void HandleList(ServerHelper helper, String[] msgParts) throws IOException {
+        if (msgParts.length != 3) {
+            System.out.println("Invalid request.");
+            return;
+        }
+
+        String name = msgParts[2];
+        helper.ListOtherClients(name);
+    }
+
+    private static void HandleChoose(ServerHelper helper, String[] msgParts) throws IOException {
+        if (msgParts.length != 4) {
+            System.out.println("Invalid request.");
+            return;
+        }
+
+        String name = msgParts[2];
+        String otherClientName = msgParts[3];
+        helper.ChoosePlayer(name, otherClientName);
+    }
+
+    private static void HandleAckChoose(ServerHelper helper, String[] msgParts) throws IOException {
+        if (msgParts.length != 5) {
+            System.out.println("Invalid request.");
+            return;
+        }
+
+        String name = msgParts[2];
+        String otherClientName = msgParts[3];
+        String statusString = msgParts[4];
+
+        // status must be either 'A' for accepted or 'D' for denied
+        if (!statusString.equals("A") && !statusString.equals("D")) {
+            System.out.println("Invalid request.");
+            return;
+        }
+
+        RequestStatus status = statusString.equals("A") ? RequestStatus.Accepted : RequestStatus.Denied;
+
+        helper.AckChoose(name, otherClientName, status);
+    }
+
+    private static void HandlePlay(ServerHelper helper, String[] msgParts) throws IOException {
+        if (msgParts.length != 4) {
+            System.out.println("Invalid request.");
+            return;
+        }
+
+
+    }
+
+    private static void HandleLogout(ServerHelper helper, String[] msgParts) throws IOException {
+        if (msgParts.length != 3) {
+            System.out.println("Invalid request.");
+            return;
+        }
+
+        String name = msgParts[2];
+        helper.Logout(name);
+    }
+
 
     public static void main(String[] args) throws IOException {
 
@@ -25,48 +103,27 @@ public class Server {
         // receive info from clients forever
         while (true) {
 
-            ReliableUDP.ReceivedMessage receivedMsg = reliableUDP.Receive(receiverSocket, buffer);
-            String msg = receivedMsg.Message;
+            ReceivedMessage received = reliableUDP.Receive(receiverSocket, buffer);
+            String msg = received.Message;
             String[] msgParts = msg.split(",");
 
             if (msg.startsWith("login")) {
-                if (msgParts.length != 4) {
-                    System.out.print("Invalid request.");
-                    continue;
-                }
-
-                String name = msgParts[2];
-                int port;
-                try {
-                    port = Integer.parseInt(msgParts[3]);
-                }
-                catch (NumberFormatException e) {
-                    System.out.print("Invalid request.");
-                    continue;
-                }
-
-                helper.Login(name, port);
+                HandleLogin(helper, msgParts);
             }
             else if (msg.startsWith("list")) {
-                if (msgParts.length != 3) {
-                    System.out.println("Invalid request.");
-                    continue;
-                }
-
-                String name = msgParts[2];
-                helper.ClientList(name);
+                HandleList(helper, msgParts);
             }
             else if (msg.startsWith("choose")) {
-                helper.Login(input);
+                HandleChoose(helper, msgParts);
             }
             else if (msg.startsWith("ackchoose")) {
-                helper.ChoosePlayer(input);
+                HandleAckChoose(helper, msgParts);
             }
             else if (msg.startsWith("play")) {
-                helper.AcceptRequest(input);
+                HandlePlay(helper, msgParts);
             }
             else if (msg.startsWith("logout")) {
-                helper.DenyRequest(input);
+                HandleLogout(helper, msgParts);
             }
             else {
                 System.out.println("Unrecognized client message.");

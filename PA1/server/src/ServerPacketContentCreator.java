@@ -9,7 +9,7 @@ public class ServerPacketContentCreator {
         return String.format("acklogin,{0}", sf);
     }
 
-    public String ClientList(Collection<ClientModel> clients) {
+    public String ListClients(Collection<ClientModel> clients) {
         StringBuilder builder = new StringBuilder("ackls");
         for (ClientModel client : clients) {
             builder.append(",");
@@ -21,11 +21,11 @@ public class ServerPacketContentCreator {
         return builder.toString();
     }
 
-    public String RequestClient(String chosenName) {
+    public String GameRequest(String chosenName) {
         return String.format("request,{0}", chosenName);
     }
 
-    public String InformClient(String name, RequestStatus status) {
+    public String AckChoose(String name, RequestStatus status) {
         String adf = status == RequestStatus.Accepted ? "A" : status == RequestStatus.Denied ? "D" : "F";
         return String.format("ackchoose,{0},{1}", name, adf);
     }
