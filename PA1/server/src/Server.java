@@ -72,7 +72,17 @@ public class Server {
             return;
         }
 
+        String name = msgParts[2];
+        int move;
+        try {
+            move = Integer.parseInt(msgParts[3]);
+        }
+        catch (NumberFormatException e) {
+            System.out.println("Invalid request.");
+            return;
+        }
 
+        helper.Play(name, move);
     }
 
     private static void HandleLogout(ServerHelper helper, String[] msgParts) throws IOException {

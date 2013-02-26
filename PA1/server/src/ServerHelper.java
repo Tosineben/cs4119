@@ -1,5 +1,4 @@
-import Enums.ClientState;
-import Enums.RequestStatus;
+import Enums.*;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -112,7 +111,7 @@ public class ServerHelper {
             clients.get(clientName).State = ClientState.Busy;
             clients.get(otherClientName).State = ClientState.Busy;
 
-            GameBoard newGame = new GameBoard();
+            GameBoard newGame = new GameBoard(clientName, otherClientName);
             games.put(clientName, newGame);
             games.put(otherClientName, newGame);
         }
@@ -126,26 +125,54 @@ public class ServerHelper {
         SendToClient(otherClientName, message);
     }
 
-    // decide whether game is over and who won/lost
-    public void IsGameOver() {
+    public void Play(String clientName, int move) throws IOException {
+        // make sure client is playing a game
+        if (!games.containsKey(clientName)) {
+            String message = packetContentCreator.AckPlay(MoveOutcome.OutOfTurn);
+            SendToClient(clientName, message);
+            return;
+        }
 
+        GameBoard board = games.get(clientName);
+        MoveOutcome outcome = board.PlayMove(clientName, move);
+
+        // make sure move was valid
+        if (outcome != MoveOutcome.Ok) {
+            String message = packetContentCreator.AckPlay(outcome);
+            SendToClient(clientName, message);
+            return;
+        }
+
+        String opponentName = board.GetOtherPlayerName(clientName);
+
+        // check for draw
+        if (board.IsDraw()) {
+            String message = packetContentCreator.GameResult(GameOutcome.Draw);
+            SendToClient(clientName, message);
+            SendToClient(opponentName, message);
+            return;
+        }
+
+        // check for game over
+        String winner = board.CheckForWinner();
+        if (winner != null) {
+            String winnerMsg = packetContentCreator.GameResult(GameOutcome.Win);
+            String loserMsg = packetContentCreator.GameResult(GameOutcome.Loss);
+            if (winner.equals(clientName)) {
+                SendToClient(clientName, winnerMsg);
+                SendToClient(opponentName, loserMsg);
+            }
+            else {
+                SendToClient(clientName, loserMsg);
+                SendToClient(opponentName, winnerMsg);
+            }
+            return;
+        }
+
+        // tell other player about new board, now their turn to play
+        String message = packetContentCreator.GameState(board.toString());
+        SendToClient(opponentName, message);
     }
-
-    // decide whether client move is valid
-    public void IsValidMove() {
-
-    }
-
-    // decide who's turn it is to play
-    public void NextClientTurn() {
-
-    }
-
-    // if client sends request to play with another client, reject new
-    // requests to both of those clients until someone accepts/denies
-
-
-
 
     private boolean IsPendingGameRequest(String fromClient, String toClient) {
         return pendingGameRequestsBySender.containsKey(fromClient)
@@ -167,6 +194,5 @@ public class ServerHelper {
         int clientPort = clients.get(clientName).Port;
         SendToClient(clientPort, message);
     }
-
 
 }

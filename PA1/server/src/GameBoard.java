@@ -1,21 +1,25 @@
 import Enums.*;
 
 import java.lang.*;
+import java.lang.String;
 
 public class GameBoard {
 
     private int[][] board;
-    private int playerToMove;
+    private String playerToMove;
+    private String player1;
+    private String player2;
 
-    public GameBoard() {
-        this.playerToMove = 1;
+    public GameBoard(String player1, String player2) {
         this.board = new int[3][3];
+        this.player1 = player1;
+        this.player2 = player2;
+        this.playerToMove = player1;
     }
 
-    public MoveOutcome PlayMove(int player, int move) {
-
+    public MoveOutcome PlayMove(String player, int move) {
         // make sure move is in turn
-        if (player != playerToMove) {
+        if (!player.equals(playerToMove)) {
             return MoveOutcome.OutOfTurn;
         }
 
@@ -32,12 +36,41 @@ public class GameBoard {
         }
 
         // move is ok, make it and switch player's turn
-        board[row][col] = player;
-        playerToMove = playerToMove%2 + 1;
+        if (player.equals(player1)) {
+            board[row][col] = 1;
+            playerToMove = player2;
+        }
+        else {
+            board[row][col] = 2;
+            playerToMove = player1;
+        }
         return MoveOutcome.Ok;
     }
 
-    public int CheckForWinner() {
+    public boolean IsDraw() {
+        for (int[] row : board) {
+            for (int space : row) {
+                if (space == 0) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    public String CheckForWinner() {
+        int winnerId = FindWinnerId();
+        switch (winnerId){
+            case 1:
+                return player1;
+            case 2:
+                return player2;
+            default:
+                return null;
+        }
+    }
+
+    private int FindWinnerId() {
         // check rows
         for (int i = 0; i < 3; i++) {
             if (board[i][0] > 0 && board[i][0] == board[i][1] && board[i][0] == board[i][2]) {
@@ -57,18 +90,12 @@ public class GameBoard {
         if (board[0][2] > 0 && board[0][2] == board[1][1] && board[0][2] == board[2][0]) {
             return board[0][2];
         }
+        // no winner
         return 0;
     }
 
-    public boolean IsDraw() {
-        for (int[] row : board) {
-            for (int space : row) {
-                if (space == 0) {
-                    return false;
-                }
-            }
-        }
-        return true;
+    public String GetOtherPlayerName(String myName) {
+        return player1.equals(myName) ? player2 : player1;
     }
 
     @Override public String toString() {

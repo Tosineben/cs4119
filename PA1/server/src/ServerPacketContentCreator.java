@@ -34,8 +34,8 @@ public class ServerPacketContentCreator {
         return String.format("play,{0}", state);
     }
 
-    public String AckPlay(boolean occupiedNotOutOfTurn) {
-        String ot = occupiedNotOutOfTurn ? "O" : "T";
+    public String AckPlay(MoveOutcome outcome) {
+        String ot = outcome == MoveOutcome.Occupied ? "O" : "T";
         return String.format("ackplay,{0}", ot);
     }
 
