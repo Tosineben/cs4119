@@ -13,7 +13,8 @@ public class UnreliableUDP {
         senderSocket.send(packet);
     }
 
-    public ReceivedMessage Receive(DatagramSocket receiverSocket, byte[] buffer) throws IOException {
+    public ReceivedMessage Receive(DatagramSocket receiverSocket) throws IOException {
+        byte[] buffer = new byte[1024];
         DatagramPacket receiverPacket = new DatagramPacket(buffer, buffer.length);
         receiverSocket.receive(receiverPacket);
         String fromIP = receiverPacket.getAddress().getHostAddress();

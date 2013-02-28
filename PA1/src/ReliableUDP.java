@@ -27,9 +27,9 @@ public class ReliableUDP {
         }
     }
 
-    public ReceivedMessage Receive(DatagramSocket receiverSocket, byte[] buffer) {
+    public ReceivedMessage Receive(DatagramSocket receiverSocket) {
         try {
-            ReceivedMessage msg = unreliableUDP.Receive(receiverSocket, buffer);
+            ReceivedMessage msg = unreliableUDP.Receive(receiverSocket);
             String[] msgParts = msg.Message.split(",");
             int packetId = Integer.parseInt(msgParts[1]);
             AckReceive(receiverSocket, msg.FromIP, msg.FromPort, packetId);
@@ -42,7 +42,7 @@ public class ReliableUDP {
     }
 
     private void AckReceive(DatagramSocket socket, String fromIP, int fromPort, int packetId) throws IOException {
-        String msg = String.format("ack,{0}", packetId);
+        String msg = "ack," + packetId;
         DatagramSocket doWeNeedThis = new DatagramSocket(); //TODO: is this needed?
         unreliableUDP.Send(doWeNeedThis, fromIP, fromPort, msg);
     }

@@ -13,27 +13,25 @@ public class UserListener implements Runnable {
     @Override
     public void run() {
 
-        System.out.println("Welcome to TIC TAC TOE, here are available commands:");
+        System.out.println("\nWelcome to TIC TAC TOE, here are available commands:");
         System.out.println("login <name>");
         System.out.println("ls");
         System.out.println("choose <name2>");
         System.out.println("accept <name1>");
         System.out.println("deny <name1>");
         System.out.println("play <number>");
-        System.out.println("logout");
+        System.out.println("logout\n");
 
         BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
 
         // accept user input forever
         while (true) {
 
-            System.out.println("\nPlease enter a command:\n");
-
             String userInput;
             try {
                 userInput = br.readLine();
             } catch (IOException e) {
-                System.out.println("Oops, I don't understand that input.");
+                InvalidUserInput();
                 continue;
             }
 
@@ -45,16 +43,16 @@ public class UserListener implements Runnable {
             }
             else {
 
-                String[] cmdParts = userInput.split(" ");
+                String[] msgParts = userInput.split(" ");
 
                 // all remaining commands should have 2 words
-                if (cmdParts.length != 2) {
-                    System.out.println("Oops, I don't recognize that command, try again.");
+                if (msgParts.length != 2) {
+                    InvalidUserInput();
                     continue;
                 }
 
-                String command = cmdParts[0];
-                String input = cmdParts[1].trim();
+                String command = msgParts[0];
+                String input = msgParts[1].trim();
 
                 if (command.equals("login")) {
                     helper.Login(input);
@@ -71,16 +69,21 @@ public class UserListener implements Runnable {
                 else if (command.equals("play")) {
                     Integer number = Utility.TryParseInt(input);
                     if (number == null) {
-                        System.out.println("Oops, I don't recognize that command, try again.");
-                        continue;
+                        InvalidUserInput();
                     }
-                    helper.PlayGame(number);
+                    else {
+                        helper.PlayGame(number);
+                    }
                 }
                 else {
-                    System.out.println("Oops, I don't recognize that command, try again.");
+                    InvalidUserInput();
                 }
             }
 
         } //while
+    }
+
+    private void InvalidUserInput() {
+        System.out.println("Oops, I don't recognize that command, try again.");
     }
 }

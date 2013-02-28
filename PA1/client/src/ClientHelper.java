@@ -1,11 +1,10 @@
-import java.net.DatagramSocket;
 
 public class ClientHelper {
 
     // singleton
     private static ClientHelper singleton;
-    public static void Init(String serverIP, int serverPort) {
-        singleton = new ClientHelper(serverIP, serverPort);
+    public static void Init(String serverIP, int serverPort, int clientPort) {
+        singleton = new ClientHelper(serverIP, serverPort, clientPort);
     }
     public static ClientHelper Instance() {
         return singleton;
@@ -15,17 +14,21 @@ public class ClientHelper {
     private ClientPacketContentCreator packetContentCreator;
     private String serverIP;
     private int serverPort;
+    private int clientPort;
 
-    private ClientHelper(String serverIP, int serverPort) {
+    private ClientHelper(String serverIP, int serverPort, int clientPort) {
         this.reliableUDP = new ReliableUDP();
         this.packetContentCreator = new ClientPacketContentCreator();
         this.serverIP = serverIP;
         this.serverPort = serverPort;
+        this.clientPort = clientPort;
     }
 
     // shared state
     public String Name;
     public boolean IsLoggedIn;
+    public int GetClientListeningPort() { return clientPort; }
+
 
     // one-time registration of the client at the server
     public void Login(String name) {
@@ -34,7 +37,7 @@ public class ClientHelper {
         }
 
         Name = name;
-        String message = packetContentCreator.Login(name);
+        String message = packetContentCreator.Login(name, clientPort);
         SendToServer(message);
     }
 

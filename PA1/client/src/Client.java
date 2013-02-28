@@ -30,16 +30,14 @@ public class Client {
             return;
         }
 
-        System.out.println("Client starting with port " + clientPort); //TODO: remove
-
-        ClientHelper.Init(serverIP, serverPort);
+        ClientHelper.Init(serverIP, serverPort, clientPort);
         ClientHelper helperInstance = ClientHelper.Instance();
 
-        // listen for user input on one thread
-        new Thread(new UserListener(helperInstance)).start();
+        // listen for messages from server on thread
+        new Thread(new ServerListener(helperInstance)).start();
 
-        // listen for messages from server on another thread
-        new Thread(new ServerListener(helperInstance, clientPort)).start();
+        // listen for user input on thread
+        new Thread(new UserListener(helperInstance)).start();
 
     } //main
 

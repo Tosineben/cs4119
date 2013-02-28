@@ -1,32 +1,31 @@
 public class ClientPacketContentCreator {
 
     private int packetId;
-    private int port;
 
-    public String Login(String name) {
-        port = 4118;
-        packetId = 1;
-        return String.format("login,{0},{1},{2}", packetId, name, port);
+    public String Login(String name, int port) {
+        return String.format("login,%d,%s,%d", ++packetId, name, port);
     }
 
     public String QueryList(String name) {
-        return String.format("list,{0},{1}", packetId, name);
+
+        return String.format("list,%d,%s", ++packetId, name);
     }
 
     public String ChoosePlayer(String name, String name2) {
-        return String.format("choose,{0},{1},{2}", packetId, name, name2);
+        return String.format("choose,%d,%s,%s", ++packetId, name, name2);
     }
 
     public String AckRequest(String name, String name1, boolean accept) {
-        return String.format("ackchoose,{0},{1},{2},{3}", packetId, name, name1, accept ? "A" : "D");
+        String ad = accept ? "A" : "D";
+        return String.format("ackchoose,%d,%s,%s,%s", ++packetId, name, name1, ad);
     }
 
     public String PlayGame(String name, int number) {
-        return String.format("play,{0},{1},{2}", packetId, name, number);
+        return String.format("play,%d,%s,%d", ++packetId, name, number);
     }
 
     public String Logout(String name) {
-        return String.format("logout,{0},{1}", packetId, name);
+        return String.format("logout,%d,%s", ++packetId, name);
     }
 
 }

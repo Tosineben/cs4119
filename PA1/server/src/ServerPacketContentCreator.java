@@ -6,7 +6,7 @@ public class ServerPacketContentCreator {
 
     public String AckLogin(boolean validName) {
         String sf = validName ? "S" : "F";
-        return String.format("acklogin,{0}", sf);
+        return String.format("acklogin,%s", sf);
     }
 
     public String ListClients(Collection<ClientModel> clients) {
@@ -22,26 +22,26 @@ public class ServerPacketContentCreator {
     }
 
     public String GameRequest(String chosenName) {
-        return String.format("request,{0}", chosenName);
+        return String.format("request,%s", chosenName);
     }
 
     public String AckChoose(String name, RequestStatus status) {
         String adf = status == RequestStatus.Accepted ? "A" : status == RequestStatus.Denied ? "D" : "F";
-        return String.format("ackchoose,{0},{1}", name, adf);
+        return String.format("ackchoose,%s,%s", name, adf);
     }
 
     public String GameState(String state) {
-        return String.format("play,{0}", state);
+        return String.format("play,%s", state);
     }
 
     public String AckPlay(MoveOutcome outcome) {
         String ot = outcome == MoveOutcome.Occupied ? "O" : "T";
-        return String.format("ackplay,{0}", ot);
+        return String.format("ackplay,%s", ot);
     }
 
     public String GameResult(GameOutcome outcome) {
         String wld = outcome == GameOutcome.Win ? "W" : outcome == GameOutcome.Loss ? "L" : "D";
-        return String.format("result,{0}", wld);
+        return String.format("result,%s", wld);
     }
 
 }
