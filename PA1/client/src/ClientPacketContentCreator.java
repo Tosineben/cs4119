@@ -1,13 +1,12 @@
 public class ClientPacketContentCreator {
 
-    private int packetId;
+    private int packetId = 0;
 
     public String Login(String name, int port) {
         return String.format("login,%d,%s,%d", ++packetId, name, port);
     }
 
     public String QueryList(String name) {
-
         return String.format("list,%d,%s", ++packetId, name);
     }
 
