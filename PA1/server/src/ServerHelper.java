@@ -69,9 +69,6 @@ public class ServerHelper {
     }
 
     public void ListOtherClients(String clientName) throws IOException {
-        // we allow people to query list of clients even if they are not logged in
-        // maybe a client wants to see who else is online before deciding to sign on
-
         ArrayList<ClientModel> otherClients = new ArrayList<ClientModel>();
         for (ClientModel client : clients.values()) {
             if (!client.Name.equals(clientName)) {

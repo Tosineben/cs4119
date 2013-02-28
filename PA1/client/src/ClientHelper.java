@@ -3,8 +3,6 @@ import java.net.DatagramSocket;
 
 public class ClientHelper {
 
-    //TODO: handle bad order of commands!
-
     // singleton
     private static ClientHelper singleton;
     public static void Init(String serverIP, int serverPort, int clientPort) throws IOException {
@@ -37,6 +35,7 @@ public class ClientHelper {
     // one-time registration of the client at the server
     public void Login(String name) {
         if (IsLoggedIn) {
+            AlreadyLoggedIn();
             return;
         }
 
@@ -48,6 +47,7 @@ public class ClientHelper {
     // query for list of other clients on server
     public void QueryList() {
         if (!IsLoggedIn) {
+            NotLoggedIn();
             return;
         }
 
@@ -58,6 +58,7 @@ public class ClientHelper {
     // initiate connection with another client to play game
     public void ChoosePlayer(String name2) {
         if (!IsLoggedIn) {
+            NotLoggedIn();
             return;
         }
 
@@ -68,6 +69,7 @@ public class ClientHelper {
     // accept game request from other client
     public void AcceptRequest(String name1) {
         if (!IsLoggedIn) {
+            NotLoggedIn();
             return;
         }
 
@@ -78,6 +80,7 @@ public class ClientHelper {
     // deny game request from other client
     public void DenyRequest(String name1) {
         if (!IsLoggedIn) {
+            NotLoggedIn();
             return;
         }
 
@@ -88,6 +91,7 @@ public class ClientHelper {
     // choose a cell to play
     public void PlayGame(int number) {
         if (!IsLoggedIn) {
+            NotLoggedIn();
             return;
         }
 
@@ -100,6 +104,7 @@ public class ClientHelper {
     // terminate connection with server
     public void Logout() {
         if (!IsLoggedIn) {
+            NotLoggedIn();
             return;
         }
 
@@ -111,6 +116,14 @@ public class ClientHelper {
 
     private void SendToServer(String message) {
         reliableUDP.Send(clientSocket, serverIP, serverPort, message);
+    }
+
+    private void AlreadyLoggedIn() {
+        System.out.println("Oops, already logged in as " + ClientName);
+    }
+
+    private void NotLoggedIn() {
+        System.out.println("Oops, please login first.");
     }
 
 }
