@@ -19,19 +19,19 @@ public class UnreliableUDP {
         receiverSocket.receive(receiverPacket);
         String fromIP = receiverPacket.getAddress().getHostAddress();
         int fromPort = receiverPacket.getPort();
-        String msg = new String(buffer, 0, receiverPacket.getLength());
+        String msg = new String(buffer, 0, receiverPacket.getLength()).trim();
         PrintReceive(fromIP, fromPort, msg); //TODO: remove
         return new ReceivedMessage(fromIP, fromPort, msg);
     }
 
     private static void PrintReceive(String fromIP, int fromPort, String message) {
         System.out.println("[" + java.util.Calendar.getInstance().getTimeInMillis() +
-            "] Receive from sender (IP: " + fromIP + ", Port: " + fromPort + "): " +  message);
+                "] Receive from sender (IP: " + fromIP + ", Port: " + fromPort + "): " +  message);
     }
 
     private static void PrintSend(String toIP, int toPort, String message) {
         System.out.println("[" + java.util.Calendar.getInstance().getTimeInMillis() +
-            "] Send to (IP: " + toIP + ", Port: " + toPort + "): " +  message);
+                "] Send to (IP: " + toIP + ", Port: " + toPort + "): " +  message);
     }
 
 }
