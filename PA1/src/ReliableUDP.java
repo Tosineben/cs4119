@@ -36,8 +36,7 @@ public class ReliableUDP {
             try {
                 receivedAck = future.get(400, TimeUnit.MILLISECONDS);
             } catch (Exception e) {
-                // swallow
-                System.out.println("didnt receive ack!"); // TODO: remove
+                // swallow it, didn't receive an ack!
             }
         }
 

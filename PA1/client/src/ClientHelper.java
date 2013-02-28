@@ -1,10 +1,15 @@
+import java.io.IOException;
+import java.net.DatagramSocket;
 
 public class ClientHelper {
 
+    //TODO: handle bad order of commands!
+
     // singleton
     private static ClientHelper singleton;
-    public static void Init(String serverIP, int serverPort, int clientPort) {
-        singleton = new ClientHelper(serverIP, serverPort, clientPort);
+    public static void Init(String serverIP, int serverPort, int clientPort) throws IOException {
+        DatagramSocket clientSocket = new DatagramSocket(clientPort);
+        singleton = new ClientHelper(serverIP, serverPort, clientSocket);
     }
     public static ClientHelper Instance() {
         return singleton;
@@ -14,21 +19,20 @@ public class ClientHelper {
     private ClientPacketContentCreator packetContentCreator;
     private String serverIP;
     private int serverPort;
-    private int clientPort;
+    private DatagramSocket clientSocket;
 
-    private ClientHelper(String serverIP, int serverPort, int clientPort) {
+    private ClientHelper(String serverIP, int serverPort, DatagramSocket clientSocket) {
         this.reliableUDP = new ReliableUDP();
         this.packetContentCreator = new ClientPacketContentCreator();
         this.serverIP = serverIP;
         this.serverPort = serverPort;
-        this.clientPort = clientPort;
+        this.clientSocket = clientSocket;
     }
 
     // shared state
-    public String Name;
+    public String ClientName;
     public boolean IsLoggedIn;
-    public int GetClientListeningPort() { return clientPort; }
-
+    public DatagramSocket GetClientSocket() { return clientSocket; }
 
     // one-time registration of the client at the server
     public void Login(String name) {
@@ -36,8 +40,8 @@ public class ClientHelper {
             return;
         }
 
-        Name = name;
-        String message = packetContentCreator.Login(name, clientPort);
+        ClientName = name;
+        String message = packetContentCreator.Login(name, clientSocket.getLocalPort());
         SendToServer(message);
     }
 
@@ -47,7 +51,7 @@ public class ClientHelper {
             return;
         }
 
-        String message = packetContentCreator.QueryList(Name);
+        String message = packetContentCreator.QueryList(ClientName);
         SendToServer(message);
     }
 
@@ -57,7 +61,7 @@ public class ClientHelper {
             return;
         }
 
-        String message = packetContentCreator.ChoosePlayer(Name, name2);
+        String message = packetContentCreator.ChoosePlayer(ClientName, name2);
         SendToServer(message);
     }
 
@@ -67,7 +71,7 @@ public class ClientHelper {
             return;
         }
 
-        String message = packetContentCreator.AckRequest(Name, name1, true);
+        String message = packetContentCreator.AckRequest(ClientName, name1, true);
         SendToServer(message);
     }
 
@@ -77,7 +81,7 @@ public class ClientHelper {
             return;
         }
 
-        String message = packetContentCreator.AckRequest(Name, name1, false);
+        String message = packetContentCreator.AckRequest(ClientName, name1, false);
         SendToServer(message);
     }
 
@@ -87,9 +91,9 @@ public class ClientHelper {
             return;
         }
 
-        System.out.println(Name + " " + number);
+        System.out.println(ClientName + " " + number);
 
-        String message = packetContentCreator.PlayGame(Name, number);
+        String message = packetContentCreator.PlayGame(ClientName, number);
         SendToServer(message);
     }
 
@@ -99,14 +103,14 @@ public class ClientHelper {
             return;
         }
 
-        System.out.println(Name + " logout");
+        System.out.println(ClientName + " logout");
 
-        String message = packetContentCreator.Logout(Name);
+        String message = packetContentCreator.Logout(ClientName);
         SendToServer(message);
     }
 
     private void SendToServer(String message) {
-        reliableUDP.Send(serverIP, serverPort, message);
+        reliableUDP.Send(clientSocket, serverIP, serverPort, message);
     }
 
 }

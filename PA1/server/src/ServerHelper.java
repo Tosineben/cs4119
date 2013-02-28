@@ -1,5 +1,3 @@
-import Enums.*;
-
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -9,10 +7,10 @@ public class ServerHelper {
 
     // singleton
     private static ServerHelper singleton;
+    public static void Init(DatagramSocket senderSocket) {
+        singleton = new ServerHelper(senderSocket);
+    }
     public static ServerHelper Instance() {
-        if (singleton == null) {
-            singleton = new ServerHelper();
-        }
         return singleton;
     }
 
@@ -21,13 +19,15 @@ public class ServerHelper {
     private HashMap<String, String> pendingGameRequestsBySender;
     private HashMap<String, ClientModel> clients;
     private HashMap<String, GameBoard> games;
+    private DatagramSocket senderSocket;
 
-    private ServerHelper() {
-        unreliableUDP = new UnreliableUDP();
-        packetContentCreator = new ServerPacketContentCreator();
-        pendingGameRequestsBySender = new HashMap<String, String>();
-        clients = new HashMap<String, ClientModel>();
-        games = new HashMap<String, GameBoard>();
+    private ServerHelper(DatagramSocket senderSocket) {
+        this.unreliableUDP = new UnreliableUDP();
+        this.packetContentCreator = new ServerPacketContentCreator();
+        this.pendingGameRequestsBySender = new HashMap<String, String>();
+        this.clients = new HashMap<String, ClientModel>();
+        this.games = new HashMap<String, GameBoard>();
+        this.senderSocket = senderSocket;
     }
 
     public void Login(String clientName, int clientPort) throws IOException {
@@ -222,8 +222,7 @@ public class ServerHelper {
     private void SendToClient(int clientPort, String message) throws IOException {
         // client ip is hard-coded as server's ip --> https://piazza.com/class#spring2013/csee4119/69
         String clientIP = InetAddress.getLocalHost().getHostAddress();
-        DatagramSocket socket = new DatagramSocket();
-        unreliableUDP.Send(socket, clientIP, clientPort, message);
+        unreliableUDP.Send(senderSocket, clientIP, clientPort, message);
     }
 
     private void SendToClient(String clientName, String message) throws IOException {

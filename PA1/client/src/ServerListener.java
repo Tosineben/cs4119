@@ -1,33 +1,27 @@
 import java.io.IOException;
-import java.net.DatagramSocket;
-import java.net.SocketException;
 
 public class ServerListener implements Runnable {
 
     private UnreliableUDP unreliableUDP; // no packets dropped from server to client
-    private DatagramSocket receiverSocket;
     private ClientHelper helper;
 
     public ServerListener(ClientHelper helper) throws IOException {
         this.unreliableUDP = new UnreliableUDP();
         this.helper = helper;
-        this.receiverSocket = new DatagramSocket(helper.GetClientListeningPort());
     }
 
     @Override
     public void run() {
-
-        System.out.println("ServerListener starting, port " + helper.GetClientListeningPort());
 
         while (true) {
 
             ReceivedMessage received;
 
             try {
-                received = unreliableUDP.Receive(receiverSocket);
+                received = unreliableUDP.Receive(helper.GetClientSocket());
             }
             catch (IOException e) {
-                System.out.println("Oops, there was a problem receiving data from the game server.");
+                // swallow this because assignment assumes messages from server to client always work
                 continue;
             }
 
@@ -71,11 +65,11 @@ public class ServerListener implements Runnable {
 
         String state = msgParts[1];
         if (state.equals("F")) {
-            System.out.println("login fail " + helper.Name);
+            System.out.println("login fail " + helper.ClientName);
             helper.IsLoggedIn = false;
         }
         else if (state.equals("S")) {
-            System.out.println("login success " + helper.Name);
+            System.out.println("login success " + helper.ClientName);
             helper.IsLoggedIn = true;
         }
         else {
@@ -181,19 +175,21 @@ public class ServerListener implements Runnable {
 
         String status = msgParts[1];
         if (status.equals("W")) {
-            System.out.println(helper.Name + " win");
+            System.out.println(helper.ClientName + " win");
         }
         else if (status.equals("L")) {
-            System.out.println(helper.Name + " lose");
+            System.out.println(helper.ClientName + " lose");
         }
         else if (status.equals("D")) {
-            System.out.println(helper.Name + " draw");
+            System.out.println(helper.ClientName + " draw");
         }
         else {
             InvalidMessageFromServer();
         }
     }
 
+    // this should NEVER happen because we have control over both server and client
+    // mostly here to show that messages are validated if something weird happens
     private void InvalidMessageFromServer() {
         System.out.println("Oops, received an invalid message from the game server.");
     }

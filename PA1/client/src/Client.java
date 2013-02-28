@@ -33,12 +33,7 @@ public class Client {
         ClientHelper.Init(serverIP, serverPort, clientPort);
         ClientHelper helperInstance = ClientHelper.Instance();
 
-        // listen for messages from server on thread
-        new Thread(new ServerListener(helperInstance)).start();
-
-        // listen for user input on thread
-        new Thread(new UserListener(helperInstance)).start();
-
-    } //main
-
+        new Thread(new ServerListener(helperInstance)).start(); // listen for messages from server
+        new Thread(new UserListener(helperInstance)).start(); // listen for input from user
+    }
 }

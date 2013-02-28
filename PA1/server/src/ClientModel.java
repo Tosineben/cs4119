@@ -1,5 +1,3 @@
-import Enums.ClientState;
-
 public class ClientModel {
 
     public ClientModel(String name, int port) {

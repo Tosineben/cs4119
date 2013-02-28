@@ -1,5 +1,3 @@
-import Enums.*;
-
 import java.util.Collection;
 
 public class ServerPacketContentCreator {

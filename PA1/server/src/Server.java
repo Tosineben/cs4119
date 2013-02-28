@@ -1,20 +1,21 @@
-import Enums.RequestStatus;
-
 import java.io.IOException;
 import java.net.DatagramSocket;
 
 public class Server {
 
-    private static ServerHelper helper = ServerHelper.Instance();
+    private static ServerHelper helper;
 
     public static void main(String[] args) throws IOException {
         // server hard-coded to listen at 4119
         int receiverPort = 4119;
         DatagramSocket receiverSocket = new DatagramSocket(receiverPort);
 
-        System.out.println("Server starting, receiving at port " + receiverPort); //TODO: remove
+        System.out.println("Server starting, receiving at port " + receiverPort);
 
         ReliableUDP reliableUDP = new ReliableUDP(); // need reliable listener
+
+        ServerHelper.Init(receiverSocket);
+        helper = ServerHelper.Instance();
 
         // receive info from clients forever
         while (true) {
