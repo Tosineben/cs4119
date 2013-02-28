@@ -5,6 +5,51 @@ import java.net.DatagramSocket;
 
 public class Server {
 
+    public static void main(String[] args) throws IOException {
+        // server hard-coded to listen at 4119
+        int receiverPort = 4119;
+        DatagramSocket receiverSocket = new DatagramSocket(receiverPort);
+
+        System.out.println("Server starting, receiving at port " + receiverPort); //TODO: remove
+
+        byte[] buffer = new byte[1024];
+
+        ServerHelper helperInstance = ServerHelper.Instance();
+        ReliableUDP reliableUDP = new ReliableUDP(); // need reliable listener
+
+        // receive info from clients forever
+        while (true) {
+
+            ReceivedMessage received = reliableUDP.Receive(receiverSocket, buffer);
+            String[] msgParts = received.Message.split(",");
+            String command = msgParts[0];
+
+            if (command.equals("login")) {
+                HandleLogin(helperInstance, msgParts);
+            }
+            else if (command.equals("list")) {
+                HandleList(helperInstance, msgParts);
+            }
+            else if (command.equals("choose")) {
+                HandleChoose(helperInstance, msgParts);
+            }
+            else if (command.equals("ackchoose")) {
+                HandleAckChoose(helperInstance, msgParts);
+            }
+            else if (command.equals("play")) {
+                HandlePlay(helperInstance, msgParts);
+            }
+            else if (command.equals("logout")) {
+                HandleLogout(helperInstance, msgParts);
+            }
+            else {
+                System.out.println("Unrecognized client message.");
+            }
+        }
+    }
+
+    // Handle command methods validate input and then pass work off to ServerHelper
+
     private static void HandleLogin(ServerHelper helper, String[] msgParts) throws IOException {
         if (msgParts.length != 4) {
             System.out.print("Invalid request.");
@@ -94,53 +139,5 @@ public class Server {
         String name = msgParts[2];
         helper.Logout(name);
     }
-
-
-    public static void main(String[] args) throws IOException {
-
-        int receiverPort = 4119;
-        int bufferSize = 1024;
-
-        DatagramSocket receiverSocket = new DatagramSocket(receiverPort);
-        System.out.println("Server starting");
-        System.out.println("Receiving at port " + receiverPort + " ...");
-
-        byte[] buffer = new byte[bufferSize];
-
-        ServerHelper helper = new ServerHelper();
-        ReliableUDP reliableUDP = new ReliableUDP();
-
-        // receive info from clients forever
-        while (true) {
-
-            ReceivedMessage received = reliableUDP.Receive(receiverSocket, buffer);
-            String msg = received.Message;
-            String[] msgParts = msg.split(",");
-
-            if (msg.startsWith("login")) {
-                HandleLogin(helper, msgParts);
-            }
-            else if (msg.startsWith("list")) {
-                HandleList(helper, msgParts);
-            }
-            else if (msg.startsWith("choose")) {
-                HandleChoose(helper, msgParts);
-            }
-            else if (msg.startsWith("ackchoose")) {
-                HandleAckChoose(helper, msgParts);
-            }
-            else if (msg.startsWith("play")) {
-                HandlePlay(helper, msgParts);
-            }
-            else if (msg.startsWith("logout")) {
-                HandleLogout(helper, msgParts);
-            }
-            else {
-                System.out.println("Unrecognized client message.");
-            }
-
-        } //while
-
-    } //main
 
 }

@@ -1,23 +1,30 @@
 import Enums.*;
 
 import java.io.IOException;
+import java.net.DatagramSocket;
 import java.net.InetAddress;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class ServerHelper {
 
-    private ReliableUDP reliableUDP;
+    // singleton
+    private static ServerHelper singleton;
+    public static ServerHelper Instance() {
+        if (singleton == null) {
+            singleton = new ServerHelper();
+        }
+        return singleton;
+    }
+
+    private UnreliableUDP unreliableUDP; // no packets dropped from server to client
     private ServerPacketContentCreator packetContentCreator;
     private HashMap<String, String> pendingGameRequestsBySender;
     private HashMap<String, ClientModel> clients;
     private HashMap<String, GameBoard> games;
 
-    public ServerHelper() {
-        reliableUDP = new ReliableUDP();
+    private ServerHelper() {
+        unreliableUDP = new UnreliableUDP();
         packetContentCreator = new ServerPacketContentCreator();
-
         pendingGameRequestsBySender = new HashMap<String, String>();
         clients = new HashMap<String, ClientModel>();
         games = new HashMap<String, GameBoard>();
@@ -49,7 +56,13 @@ public class ServerHelper {
             }
         }
 
-        //TODO: forfeit active games
+        // forfeit any active game
+        if (games.containsKey(clientName)) {
+            String opponentName = games.get(clientName).GetOtherPlayerName(clientName);
+            String winnerMsg = packetContentCreator.GameResult(GameOutcome.Win);
+            SendToClient(opponentName, winnerMsg);
+            GameOver(clientName, opponentName);
+        }
 
         // remove the client
         clients.remove(clientName);
@@ -65,6 +78,14 @@ public class ServerHelper {
                 otherClients.add(client);
             }
         }
+
+        // send them in alphabetical order
+        Collections.sort(otherClients, new Comparator<ClientModel>() {
+            @Override
+            public int compare(ClientModel o1, ClientModel o2) {
+                return o1.Name.compareTo(o2.Name);
+            }
+        });
 
         String message = packetContentCreator.ListClients(otherClients);
         SendToClient(clientName, message);
@@ -104,8 +125,6 @@ public class ServerHelper {
             return;
         }
 
-        // now we know both clients are logged in and there is a pending game request
-
         // update state of both clients to busy or free
         if (status == RequestStatus.Accepted) {
             clients.get(clientName).State = ClientState.Busy;
@@ -114,6 +133,10 @@ public class ServerHelper {
             GameBoard newGame = new GameBoard(clientName, otherClientName);
             games.put(clientName, newGame);
             games.put(otherClientName, newGame);
+
+            // tell client that just accepted to move
+            String playMsg = packetContentCreator.GameState(newGame.toString());
+            SendToClient(clientName, playMsg);
         }
         else {
             clients.get(clientName).State = ClientState.Free;
@@ -121,8 +144,19 @@ public class ServerHelper {
         }
 
         // inform original client of request status
-        String message = packetContentCreator.AckChoose(clientName, status);
-        SendToClient(otherClientName, message);
+        String ackChooseMsg = packetContentCreator.AckChoose(clientName, status);
+        SendToClient(otherClientName, ackChooseMsg);
+    }
+
+    private void GameOver(String client1, String client2) {
+        games.remove(client1);
+        games.remove(client2);
+        if (IsLoggedIn(client1)) {
+            clients.get(client1).State = ClientState.Free;
+        }
+        if (IsLoggedIn(client2)) {
+            clients.get(client2).State = ClientState.Free;
+        }
     }
 
     public void Play(String clientName, int move) throws IOException {
@@ -150,6 +184,7 @@ public class ServerHelper {
             String message = packetContentCreator.GameResult(GameOutcome.Draw);
             SendToClient(clientName, message);
             SendToClient(opponentName, message);
+            GameOver(clientName, opponentName);
             return;
         }
 
@@ -166,6 +201,7 @@ public class ServerHelper {
                 SendToClient(clientName, loserMsg);
                 SendToClient(opponentName, winnerMsg);
             }
+            GameOver(clientName, opponentName);
             return;
         }
 
@@ -184,13 +220,13 @@ public class ServerHelper {
     }
 
     private void SendToClient(int clientPort, String message) throws IOException {
-        // client ip is hardcoded as server's ip, see --> https://piazza.com/class#spring2013/csee4119/69
+        // client ip is hard-coded as server's ip --> https://piazza.com/class#spring2013/csee4119/69
         String clientIP = InetAddress.getLocalHost().getHostAddress();
-        reliableUDP.Send(clientIP, clientPort, message);
+        DatagramSocket socket = new DatagramSocket();
+        unreliableUDP.Send(socket, clientIP, clientPort, message);
     }
 
     private void SendToClient(String clientName, String message) throws IOException {
-        //TODO: check for login?
         int clientPort = clients.get(clientName).Port;
         SendToClient(clientPort, message);
     }

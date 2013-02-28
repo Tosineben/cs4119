@@ -98,7 +98,8 @@ public class GameBoard {
         return player1.equals(myName) ? player2 : player1;
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
         StringBuilder builder = new StringBuilder();
         for (int[] row : board) {
             for (int space : row) {

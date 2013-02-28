@@ -5,22 +5,11 @@ import java.net.InetAddress;
 
 public class UnreliableUDP {
 
-    public void Send(String receiverIP, int receiverPort, String message, int senderPort) throws IOException {
-        DatagramSocket socket = new DatagramSocket(senderPort);
-        Send(socket, receiverIP, receiverPort, message);
-    }
-
-    public void Send(String receiverIP, int receiverPort, String message) throws IOException {
-        DatagramSocket socket = new DatagramSocket();
-        Send(socket, receiverIP, receiverPort, message);
-    }
-
-    private void Send(DatagramSocket senderSocket, String receiverIP, int receiverPort, String message) throws IOException {
-        //TODO: remove debug printing
-        PrintSend(receiverIP, receiverPort, message);
-        InetAddress receiverAddress = InetAddress.getByName(receiverIP);
+    public void Send(DatagramSocket senderSocket, String toIP, int toPort, String message) throws IOException {
+        PrintSend(toIP, toPort, message); //TODO: remove
+        InetAddress receiverAddress = InetAddress.getByName(toIP);
         byte[] buffer = message.getBytes();
-        DatagramPacket packet = new DatagramPacket(buffer, buffer.length, receiverAddress, receiverPort);
+        DatagramPacket packet = new DatagramPacket(buffer, buffer.length, receiverAddress, toPort);
         senderSocket.send(packet);
     }
 
@@ -30,8 +19,7 @@ public class UnreliableUDP {
         String fromIP = receiverPacket.getAddress().getHostAddress();
         int fromPort = receiverPacket.getPort();
         String msg = new String(buffer, 0, receiverPacket.getLength());
-        //TODO: remove debug printing
-        PrintReceive(fromIP, fromPort, msg);
+        PrintReceive(fromIP, fromPort, msg); //TODO: remove
         return new ReceivedMessage(fromIP, fromPort, msg);
     }
 

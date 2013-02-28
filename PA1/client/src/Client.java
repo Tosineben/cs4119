@@ -1,16 +1,17 @@
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.net.ServerSocket;
 
 public class Client {
 
     public static void main(String[] args) throws IOException {
 
         //TODO: remove this debug hack
-        if (args.length == 1) {
-            String firstArg = args[0];
+        if (args.length == 0) {
             args = new String[3];
-            args[0] = firstArg;
+            ServerSocket server = new ServerSocket(0);
+            int port = server.getLocalPort();
+            server.close();
+            args[0] = String.valueOf(port);
             args[1] = "127.0.0.1";
             args[2] = "4119";
         }
@@ -26,78 +27,20 @@ public class Client {
         }
         catch (Exception e) {
             System.out.println("Invalid arguments: java Client <client_port> <server_ip> <server_port>");
-            System.exit(1);
+            return;
         }
 
-        System.out.println("Welcome to TIC TAC TOE, here are available commands:");
-        System.out.println("login <name>");
-        System.out.println("ls");
-        System.out.println("choose <name2>");
-        System.out.println("accept <name1>");
-        System.out.println("deny <name1>");
-        System.out.println("play <number>");
-        System.out.println("logout");
+        System.out.println("Client starting with port " + clientPort); //TODO: remove
 
-        BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+        ClientHelper.Init(serverIP, serverPort);
+        ClientHelper helperInstance = ClientHelper.Instance();
 
-        ClientHelper helper = new ClientHelper();
+        // listen for user input on one thread
+        new Thread(new UserListener(helperInstance)).start();
 
-        // accept user input forever
-        while (true) {
-
-            System.out.println("\nPlease enter a command:");
-
-            String cmd = br.readLine();
-
-            if (cmd.equals("ls")) {
-                helper.QueryList();
-            }
-            else if (cmd.equals("logout")) {
-                helper.Logout();
-            }
-            else {
-
-                String[] cmdParts = cmd.split(" ");
-
-                // all remaining commands should have 2 words
-                if (cmdParts.length != 2) {
-                    System.out.println("Oops, I don't recognize that command, try again.");
-                    continue;
-                }
-
-                String input = cmdParts[1].trim();
-
-                if (cmd.startsWith("login")) {
-                    helper.Login(input);
-                }
-                else if (cmd.startsWith("choose")) {
-                    helper.ChoosePlayer(input);
-                }
-                else if (cmd.startsWith("accept")) {
-                    helper.AcceptRequest(input);
-                }
-                else if (cmd.startsWith("deny")) {
-                    helper.DenyRequest(input);
-                }
-                else if (cmd.startsWith("play")) {
-                    int number;
-
-                    try{
-                        number = Integer.parseInt(input);
-                    }
-                    catch (NumberFormatException e) {
-                        System.out.println("Oops, I don't recognize that command, try again.");
-                        continue;
-                    }
-
-                    helper.PlayGame(number);
-                }
-                else {
-                    System.out.println("Oops, I don't recognize that command, try again.");
-                }
-            }
-
-        } //while
+        // listen for messages from server on another thread
+        new Thread(new ServerListener(helperInstance, clientPort)).start();
 
     } //main
+
 }
