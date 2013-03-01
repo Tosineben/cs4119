@@ -5,52 +5,55 @@ public class Server {
 
     private static ServerHelper helper;
 
-    public static void main(String[] args) throws IOException {
-        // server hard-coded to listen at 4119
-        int receiverPort = 4119;
-        DatagramSocket receiverSocket = new DatagramSocket(receiverPort);
+    public static void main(String[] args) {
+        try {
+            // server hard-coded to listen at 4119
+            DatagramSocket receiverSocket = new DatagramSocket(4119);
 
-        System.out.println("Server starting, receiving at port " + receiverPort);
+            // server needs reliable UDP listener
+            ReliableUDP reliableUDP = new ReliableUDP();
 
-        ReliableUDP reliableUDP = new ReliableUDP(); // need reliable listener
+            ServerHelper.Init(receiverSocket);
+            helper = ServerHelper.Instance();
 
-        ServerHelper.Init(receiverSocket);
-        helper = ServerHelper.Instance();
+            // receive info from clients forever
+            while (true) {
 
-        // receive info from clients forever
-        while (true) {
+                ReceivedMessage received = reliableUDP.Receive(receiverSocket);
+                String[] msgParts = received.Message.split(",");
+                String command = msgParts[0];
 
-            ReceivedMessage received = reliableUDP.Receive(receiverSocket);
-            String[] msgParts = received.Message.split(",");
-            String command = msgParts[0];
-
-            if (command.equals("login")) {
-                HandleLogin(msgParts);
+                if (command.equals("login")) {
+                    HandleLogin(msgParts, received.FromIP);
+                }
+                else if (command.equals("list")) {
+                    HandleList(msgParts);
+                }
+                else if (command.equals("choose")) {
+                    HandleChoose(msgParts);
+                }
+                else if (command.equals("ackchoose")) {
+                    HandleAckChoose(msgParts);
+                }
+                else if (command.equals("play")) {
+                    HandlePlay(msgParts);
+                }
+                else if (command.equals("logout")) {
+                    HandleLogout(msgParts);
+                }
+                else {
+                    InvalidMessageFromClient();
+                }
             }
-            else if (command.equals("list")) {
-                HandleList(msgParts);
-            }
-            else if (command.equals("choose")) {
-                HandleChoose(msgParts);
-            }
-            else if (command.equals("ackchoose")) {
-                HandleAckChoose(msgParts);
-            }
-            else if (command.equals("play")) {
-                HandlePlay(msgParts);
-            }
-            else if (command.equals("logout")) {
-                HandleLogout(msgParts);
-            }
-            else {
-                InvalidMessageFromClient();
-            }
+        }
+        catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
     // Handle methods validate input and then pass work off to ServerHelper
 
-    private static void HandleLogin(String[] msgParts) throws IOException {
+    private static void HandleLogin(String[] msgParts, String fromIP) throws IOException {
         if (msgParts.length != 4) {
             InvalidMessageFromClient();
             return;
@@ -63,7 +66,7 @@ public class Server {
             InvalidMessageFromClient();
         }
         else {
-            helper.Login(name, port);
+            helper.Login(name, port, fromIP);
         }
     }
 
@@ -74,7 +77,7 @@ public class Server {
         }
 
         String name = msgParts[2];
-        helper.ListOtherClients(name);
+        helper.ListClients(name);
     }
 
     private static void HandleChoose(String[] msgParts) throws IOException {

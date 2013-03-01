@@ -6,8 +6,9 @@ public class ClientHelper {
     // singleton
     private static ClientHelper singleton;
     public static void Init(String serverIP, int serverPort, int clientPort) throws IOException {
-        DatagramSocket clientSocket = new DatagramSocket(clientPort);
-        singleton = new ClientHelper(serverIP, serverPort, clientSocket);
+        DatagramSocket receiverSocket = new DatagramSocket(clientPort);
+        DatagramSocket senderSocket = new DatagramSocket();
+        singleton = new ClientHelper(serverIP, serverPort, senderSocket, receiverSocket);
     }
     public static ClientHelper Instance() {
         return singleton;
@@ -17,20 +18,22 @@ public class ClientHelper {
     private ClientPacketContentCreator packetContentCreator;
     private String serverIP;
     private int serverPort;
-    private DatagramSocket clientSocket;
+    private DatagramSocket senderSocket;
+    private DatagramSocket receiverSocket;
 
-    private ClientHelper(String serverIP, int serverPort, DatagramSocket clientSocket) {
+    private ClientHelper(String serverIP, int serverPort, DatagramSocket senderSocket, DatagramSocket receiverSocket) {
         this.reliableUDP = new ReliableUDP();
         this.packetContentCreator = new ClientPacketContentCreator();
         this.serverIP = serverIP;
         this.serverPort = serverPort;
-        this.clientSocket = clientSocket;
+        this.senderSocket = senderSocket;
+        this.receiverSocket = receiverSocket;
     }
 
     // shared state
     public String ClientName;
     public boolean IsLoggedIn;
-    public DatagramSocket GetClientSocket() { return clientSocket; }
+    public DatagramSocket GetReceiverSocket() { return receiverSocket; }
 
     // one-time registration of the client at the server
     public void Login(String name) {
@@ -40,7 +43,7 @@ public class ClientHelper {
         }
 
         ClientName = name;
-        String message = packetContentCreator.Login(name, clientSocket.getLocalPort());
+        String message = packetContentCreator.Login(name, receiverSocket.getLocalPort());
         SendToServer(message);
     }
 
@@ -112,10 +115,12 @@ public class ClientHelper {
 
         String message = packetContentCreator.Logout(ClientName);
         SendToServer(message);
+
+        IsLoggedIn = false;
     }
 
     private void SendToServer(String message) {
-        reliableUDP.Send(clientSocket, serverIP, serverPort, message);
+        reliableUDP.Send(senderSocket, serverIP, serverPort, message);
     }
 
     private void AlreadyLoggedIn() {

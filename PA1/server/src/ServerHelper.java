@@ -19,6 +19,7 @@ public class ServerHelper {
     private HashMap<String, String> pendingGameRequestsBySender;
     private HashMap<String, ClientModel> clients;
     private HashMap<String, GameBoard> games;
+    private HashMap<String, Integer> clientCountByIP;
     private DatagramSocket senderSocket;
 
     private ServerHelper(DatagramSocket senderSocket) {
@@ -27,24 +28,35 @@ public class ServerHelper {
         this.pendingGameRequestsBySender = new HashMap<String, String>();
         this.clients = new HashMap<String, ClientModel>();
         this.games = new HashMap<String, GameBoard>();
+        this.clientCountByIP = new HashMap<String, Integer>();
         this.senderSocket = senderSocket;
     }
 
-    public void Login(String clientName, int clientPort) throws IOException {
-        boolean isValidName = !IsLoggedIn(clientName);
+    public void Login(String clientName, int clientPort, String clientIP) throws IOException {
+        boolean isValidLogin = false;
 
-        if (isValidName) {
-            ClientModel model = new ClientModel(clientName, clientPort);
-            clients.put(clientName, model);
+        if (!IsLoggedIn(clientName)) {
+
+            int numClientsAtIP = clientCountByIP.containsKey(clientIP) ? clientCountByIP.get(clientIP) : 0;
+
+            if (numClientsAtIP < 5) {
+                ClientModel model = new ClientModel(clientName, clientIP, clientPort);
+                clients.put(clientName, model);
+                clientCountByIP.put(clientIP, numClientsAtIP + 1);
+                isValidLogin = true;
+            }
         }
 
-        String message = packetContentCreator.AckLogin(isValidName);
+        String message = packetContentCreator.AckLogin(isValidLogin);
         SendToClient(clientPort, message);
     }
 
     public void Logout(String clientName) throws IOException {
         // remove pending game requests from this client
-        pendingGameRequestsBySender.remove(clientName);
+        String otherClient = pendingGameRequestsBySender.remove(clientName);
+        if (otherClient != null) {
+            clients.get(otherClient).State = ClientState.Free;
+        }
 
         // update pending game requests to this client to 'failed'
         for (Map.Entry<String, String> kvp : pendingGameRequestsBySender.entrySet()) {
@@ -64,40 +76,38 @@ public class ServerHelper {
             GameOver(clientName, opponentName);
         }
 
+        // reduce client ip count
+        ClientModel client = clients.get(clientName);
+        if (client != null) {
+            clientCountByIP.put(client.IP, clientCountByIP.get(client.IP) - 1);
+        }
+
         // remove the client
         clients.remove(clientName);
     }
 
-    public void ListOtherClients(String clientName) throws IOException {
-        ArrayList<ClientModel> otherClients = new ArrayList<ClientModel>();
-        for (ClientModel client : clients.values()) {
-            if (!client.Name.equals(clientName)) {
-                otherClients.add(client);
-            }
-        }
+    public void ListClients(String clientName) throws IOException {
+        // list ALL clients, not "other" clients because this is how "Test Cases.docx" works
+        ArrayList<ClientModel> allClients = new ArrayList<ClientModel>(clients.values());
 
         // send them in alphabetical order
-        Collections.sort(otherClients, new Comparator<ClientModel>() {
+        Collections.sort(allClients, new Comparator<ClientModel>() {
             @Override
             public int compare(ClientModel o1, ClientModel o2) {
                 return o1.Name.compareTo(o2.Name);
             }
         });
 
-        String message = packetContentCreator.ListClients(otherClients);
+        String message = packetContentCreator.ListClients(allClients    );
         SendToClient(clientName, message);
     }
 
     public void ChoosePlayer(String clientName, String otherClientName) throws IOException {
-        // make sure client sending game request is free
-        if (!IsLoggedIn(clientName) || clients.get(clientName).State != ClientState.Free) {
-            String message = packetContentCreator.AckChoose(otherClientName, RequestStatus.Failed);
-            SendToClient(clientName, message);
-            return;
-        }
+        boolean isClientFree = IsLoggedIn(clientName) && clients.get(clientName).State == ClientState.Free;
+        boolean isOtherClientFree = IsLoggedIn(otherClientName) && clients.get(otherClientName).State == ClientState.Free;
 
-        // make sure client receiving game request is free
-        if (!IsLoggedIn(otherClientName) || clients.get(otherClientName).State != ClientState.Free) {
+        // make sure both clients are free and that client isn't choosing them self
+        if (!isClientFree || !isOtherClientFree || clientName.equals(otherClientName)) {
             String message = packetContentCreator.AckChoose(otherClientName, RequestStatus.Failed);
             SendToClient(clientName, message);
             return;

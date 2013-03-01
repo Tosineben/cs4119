@@ -1,4 +1,5 @@
 import java.io.IOException;
+import java.net.DatagramSocket;
 
 public class ServerListener implements Runnable {
 
@@ -18,7 +19,7 @@ public class ServerListener implements Runnable {
             ReceivedMessage received;
 
             try {
-                received = unreliableUDP.Receive(helper.GetClientSocket());
+                received = unreliableUDP.Receive(helper.GetReceiverSocket());
             }
             catch (IOException e) {
                 // swallow this because assignment assumes messages from server to client always work
