@@ -36,15 +36,18 @@ public class ServerListener implements Runnable {
                 HandleAckLs(msgParts);
             }
             else if (command.equals("request")) {
+                System.out.println(received.Message); // not sure why we print this here, but assignment says to
                 HandleRequest(msgParts);
             }
             else if (command.equals("ackchoose")) {
+                System.out.println(received.Message); // not sure why we print this here, but assignment says to
                 HandleAckChoose(msgParts);
             }
             else if (command.equals("play")) {
                 HandlePlay(msgParts);
             }
             else if (command.equals("ackplay")) {
+                System.out.println(received.Message); // not sure why we print this here, but assignment says to
                 HandleAckPlay(msgParts);
             }
             else if (command.equals("result")) {

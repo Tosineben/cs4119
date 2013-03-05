@@ -4,11 +4,17 @@ public class ClientModel {
         Name = name;
         Port = port;
         IP = ip;
-        State = ClientState.Free;
+        CurentState = State.Free;
     }
 
     public String Name;
-    public ClientState State;
+    public State CurentState;
     public int Port;
     public String IP;
+
+    public static enum State {
+        Free,
+        Busy,
+        Decision,
+    }
 }

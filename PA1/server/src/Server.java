@@ -1,3 +1,5 @@
+import sun.print.RasterPrinterJob;
+
 import java.io.IOException;
 import java.net.DatagramSocket;
 
@@ -8,7 +10,11 @@ public class Server {
     public static void main(String[] args) {
         try {
             // server hard-coded to listen at 4119
-            DatagramSocket receiverSocket = new DatagramSocket(4119);
+            int port = 4119;
+
+            System.out.println("Server starting on port " + port);
+
+            DatagramSocket receiverSocket = new DatagramSocket(port);
 
             // server needs reliable UDP listener
             ReliableUDP reliableUDP = new ReliableUDP();
@@ -99,16 +105,9 @@ public class Server {
 
         String name = msgParts[2];
         String otherClientName = msgParts[3];
-        String statusString = msgParts[4];
+        String status = msgParts[4];
 
-        RequestStatus status;
-        if (statusString.equals("A")) {
-            status = RequestStatus.Accepted;
-        }
-        else if (statusString.equals("D")) {
-            status = RequestStatus.Denied;
-        }
-        else {
+        if (status.equals("F")) {
             InvalidMessageFromClient();
             return;
         }

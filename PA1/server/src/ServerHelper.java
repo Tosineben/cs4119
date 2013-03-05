@@ -55,15 +55,15 @@ public class ServerHelper {
         // remove pending game requests from this client
         String otherClient = pendingGameRequestsBySender.remove(clientName);
         if (otherClient != null) {
-            clients.get(otherClient).State = ClientState.Free;
+            clients.get(otherClient).CurentState = ClientModel.State.Free;
         }
 
         // update pending game requests to this client to 'failed'
         for (Map.Entry<String, String> kvp : pendingGameRequestsBySender.entrySet()) {
             if (kvp.getValue().equals(clientName)) {
                 String clientThatRequestedGame = kvp.getKey();
-                clients.get(clientThatRequestedGame).State = ClientState.Free;
-                String message = packetContentCreator.AckChoose(clientName, RequestStatus.Failed);
+                clients.get(clientThatRequestedGame).CurentState = ClientModel.State.Free;
+                String message = packetContentCreator.AckChoose(clientName, "F");
                 SendToClient(clientThatRequestedGame, message);
             }
         }
@@ -71,7 +71,7 @@ public class ServerHelper {
         // forfeit any active game
         if (games.containsKey(clientName)) {
             String opponentName = games.get(clientName).GetOtherPlayerName(clientName);
-            String winnerMsg = packetContentCreator.GameResult(GameOutcome.Win);
+            String winnerMsg = packetContentCreator.GameResult("W");
             SendToClient(opponentName, winnerMsg);
             GameOver(clientName, opponentName);
         }
@@ -103,19 +103,19 @@ public class ServerHelper {
     }
 
     public void ChoosePlayer(String clientName, String otherClientName) throws IOException {
-        boolean isClientFree = IsLoggedIn(clientName) && clients.get(clientName).State == ClientState.Free;
-        boolean isOtherClientFree = IsLoggedIn(otherClientName) && clients.get(otherClientName).State == ClientState.Free;
+        boolean isClientFree = IsLoggedIn(clientName) && clients.get(clientName).CurentState == ClientModel.State.Free;
+        boolean isOtherClientFree = IsLoggedIn(otherClientName) && clients.get(otherClientName).CurentState == ClientModel.State.Free;
 
         // make sure both clients are free and that client isn't choosing them self
         if (!isClientFree || !isOtherClientFree || clientName.equals(otherClientName)) {
-            String message = packetContentCreator.AckChoose(otherClientName, RequestStatus.Failed);
+            String message = packetContentCreator.AckChoose(otherClientName, "F");
             SendToClient(clientName, message);
             return;
         }
 
         // both clients are now in 'decision' state
-        clients.get(clientName).State = ClientState.Decision;
-        clients.get(otherClientName).State = ClientState.Decision;
+        clients.get(clientName).CurentState = ClientModel.State.Decision;
+        clients.get(otherClientName).CurentState = ClientModel.State.Decision;
 
         // send game request to other player
         String message = packetContentCreator.GameRequest(clientName);
@@ -125,7 +125,7 @@ public class ServerHelper {
         pendingGameRequestsBySender.put(clientName, otherClientName);
     }
 
-    public void AckChoose(String clientName, String otherClientName, RequestStatus status) throws IOException {
+    public void AckChoose(String clientName, String otherClientName, String status) throws IOException {
         // make sure there is a pending game request
         if (!IsPendingGameRequest(otherClientName, clientName)) {
             // just do nothing, client is acknowledging a game request that doesn't exist
@@ -133,9 +133,9 @@ public class ServerHelper {
         }
 
         // update state of both clients to busy or free
-        if (status == RequestStatus.Accepted) {
-            clients.get(clientName).State = ClientState.Busy;
-            clients.get(otherClientName).State = ClientState.Busy;
+        if ("A".equals(status)) {
+            clients.get(clientName).CurentState = ClientModel.State.Busy;
+            clients.get(otherClientName).CurentState = ClientModel.State.Busy;
 
             GameBoard newGame = new GameBoard(clientName, otherClientName);
             games.put(clientName, newGame);
@@ -146,8 +146,8 @@ public class ServerHelper {
             SendToClient(clientName, playMsg);
         }
         else {
-            clients.get(clientName).State = ClientState.Free;
-            clients.get(otherClientName).State = ClientState.Free;
+            clients.get(clientName).CurentState = ClientModel.State.Free;
+            clients.get(otherClientName).CurentState = ClientModel.State.Free;
         }
 
         // inform original client of request status
@@ -159,10 +159,10 @@ public class ServerHelper {
         games.remove(client1);
         games.remove(client2);
         if (IsLoggedIn(client1)) {
-            clients.get(client1).State = ClientState.Free;
+            clients.get(client1).CurentState = ClientModel.State.Free;
         }
         if (IsLoggedIn(client2)) {
-            clients.get(client2).State = ClientState.Free;
+            clients.get(client2).CurentState = ClientModel.State.Free;
         }
     }
 
@@ -188,7 +188,7 @@ public class ServerHelper {
 
         // check for draw
         if (board.IsDraw()) {
-            String message = packetContentCreator.GameResult(GameOutcome.Draw);
+            String message = packetContentCreator.GameResult("D");
             SendToClient(clientName, message);
             SendToClient(opponentName, message);
             GameOver(clientName, opponentName);
@@ -198,8 +198,8 @@ public class ServerHelper {
         // check for game over
         String winner = board.CheckForWinner();
         if (winner != null) {
-            String winnerMsg = packetContentCreator.GameResult(GameOutcome.Win);
-            String loserMsg = packetContentCreator.GameResult(GameOutcome.Loss);
+            String winnerMsg = packetContentCreator.GameResult("W");
+            String loserMsg = packetContentCreator.GameResult("L");
             if (winner.equals(clientName)) {
                 SendToClient(clientName, winnerMsg);
                 SendToClient(opponentName, loserMsg);

@@ -13,7 +13,7 @@ public class ServerPacketContentCreator {
             builder.append(",");
             builder.append(client.Name);
             builder.append(",");
-            String stateString = client.State == ClientState.Free ? "free" : client.State == ClientState.Busy ? "busy" : "decision";
+            String stateString = client.CurentState == ClientModel.State.Free ? "free" : client.CurentState == ClientModel.State.Busy ? "busy" : "decision";
             builder.append(stateString);
         }
         return builder.toString();
@@ -23,9 +23,8 @@ public class ServerPacketContentCreator {
         return String.format("request,%s", chosenName);
     }
 
-    public String AckChoose(String name, RequestStatus status) {
-        String adf = status == RequestStatus.Accepted ? "A" : status == RequestStatus.Denied ? "D" : "F";
-        return String.format("ackchoose,%s,%s", name, adf);
+    public String AckChoose(String name, String status) {
+        return String.format("ackchoose,%s,%s", name, status);
     }
 
     public String GameState(String state) {
@@ -37,9 +36,8 @@ public class ServerPacketContentCreator {
         return String.format("ackplay,%s", ot);
     }
 
-    public String GameResult(GameOutcome outcome) {
-        String wld = outcome == GameOutcome.Win ? "W" : outcome == GameOutcome.Loss ? "L" : "D";
-        return String.format("result,%s", wld);
+    public String GameResult(String outcome) {
+        return String.format("result,%s", outcome);
     }
 
 }

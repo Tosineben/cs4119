@@ -11,6 +11,8 @@ public class UserListener implements Runnable {
     @Override
     public void run() {
 
+        System.out.println("Welcome to TIC TAC TOE! Enter a command to begin.");
+
         BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
 
         // accept user input forever
