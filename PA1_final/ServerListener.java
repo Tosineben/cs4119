@@ -6,7 +6,7 @@ public class ServerListener implements Runnable {
     private UnreliableUDP unreliableUDP; // no packets dropped from server to client
     private ClientHelper helper;
 
-    public ServerListener(ClientHelper helper) {
+    public ServerListener(ClientHelper helper) throws IOException {
         this.unreliableUDP = new UnreliableUDP();
         this.helper = helper;
     }
