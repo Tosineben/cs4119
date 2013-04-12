@@ -39,9 +39,9 @@ public class DVNode {
 
             // count args by two's, getting info for each neighbor
             for (int i = 1; i < args.length; i += 2) {
-                int neighborPort = Integer.parseInt(args[i]);
-                double neighborWeight = Double.parseDouble(args[i + 1]);
-                neighbors.add(new Neighbor(neighborPort, neighborWeight));
+                int nPort = Integer.parseInt(args[i]);
+                double nWeight = Double.parseDouble(args[i + 1]);
+                neighbors.add(new Neighbor(nPort, nWeight));
             }
 
             last = "last".equals(args[args.length - 1]);
