@@ -5,15 +5,17 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.SocketException;
-import java.util.ArrayList;
-import java.util.Calendar;
-import java.util.HashSet;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.*;
 
 public class SRNode {
 
-    public SRNode(int sourcePort, int destPort, int windowSize, int timeoutMs, double lossRate) throws SocketException {
+    public SRNode(int sourcePort, int destPort, int windowSize, int timeoutMs, double lossRate) throws IllegalArgumentException, SocketException {
+
+        if (lossRate < 0 || lossRate > 1 || sourcePort <= 0 || destPort <= 0 || windowSize <= 0 || timeoutMs <= 0) {
+            throw new IllegalArgumentException("Arguments outside valid range.");
+        }
+
         this.sourcePort = sourcePort;
         this.destPort = destPort;
         this.windowSize = windowSize;
@@ -24,11 +26,11 @@ public class SRNode {
 
         this.sendNextSeqNum = 0;
         this.sendWindowBase = 0;
-        this.ackedPackets = new HashSet<Integer>();
+        this.ackedPackets = new HashMap<Integer, Packet>();
         this.dataToSend = new ArrayList<Packet>();
 
         this.rcvWindowBase = 0;
-        this.rcvdPackets = new HashSet<Integer>();
+        this.rcvdPackets = new HashMap<Integer, Packet>();
     }
 
     private int sourcePort;     // send msgs from this port
@@ -40,15 +42,15 @@ public class SRNode {
 
     private int sendNextSeqNum;
     private int sendWindowBase;
-    private HashSet<Integer> ackedPackets;
+    private HashMap<Integer, Packet> ackedPackets;
     private List<Packet> dataToSend;
 
     private int rcvWindowBase;
-    private HashSet<Integer> rcvdPackets;
+    private HashMap<Integer, Packet> rcvdPackets;
 
     public static void main(String[] args) {
 
-        // TODO remove debug
+        // TODO remove this
         if (args.length == 0){
             args = new String[5];
             args[0] = "11111";
@@ -58,22 +60,27 @@ public class SRNode {
             args[4] = "0.56";
         }
 
+        SRNode node;
+
         try {
-            // get arguments
+            // get input arguments
             int sourcePort = Integer.parseInt(args[0]);
             int destPort = Integer.parseInt(args[1]);
             int windowSize = Integer.parseInt(args[2]);
             int timeoutMs = Integer.parseInt(args[3]);
             double lossRate = Double.parseDouble(args[4]);
 
-            // make a node and kick off selective repeat
-            SRNode node = new SRNode(sourcePort, destPort, windowSize, timeoutMs, lossRate);
-            node.StartSelectiveRepeat();
+            // make a node, which validates inputs
+            node = new SRNode(sourcePort, destPort, windowSize, timeoutMs, lossRate);
         }
         catch (Exception e) {
             e.printStackTrace();
             System.err.println("Usage: SRNode <source-port> <destination-port> <window-size> <time-out> <loss-rate>");
+            return;
         }
+
+        // kick off selective repeat
+        node.StartSelectiveRepeat();
     }
 
     public void StartSelectiveRepeat() {
@@ -130,11 +137,11 @@ public class SRNode {
     }
 
     private class UdpListener implements Runnable {
-
         @Override
         public void run() {
             // receive UDP messages forever
             while (true) {
+
                 Packet received;
                 try {
                     received = UnreliableReceive();
@@ -142,8 +149,13 @@ public class SRNode {
                 catch (IOException e) {
                     continue; // just swallow this, received a weird packet
                 }
+
+                if (received == null) {
+                    continue; // this means the packet was "lost"
+                }
+
                 if (received.IsAck) {
-                    HandleReceivedAck(received.Number);
+                    HandleReceivedAck(received);
                 }
                 else {
                     HandleReceived(received);
@@ -152,20 +164,46 @@ public class SRNode {
         }
     }
 
-    private Packet UnreliableReceive() throws IOException {
-        byte[] buffer = new byte[1024];
-        DatagramPacket receivedDatagram = new DatagramPacket(buffer, buffer.length);
-        socket.receive(receivedDatagram);
-        String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
-        return new Packet(msg, receivedDatagram.getPort(), sourcePort);
-    }
+    private class PacketSender implements Runnable {
 
-    private void UnreliableSend(int toPort, Packet payload) throws IOException {
-        // all communication is on the same machine, so use local host
-        InetAddress receiverAddress = InetAddress.getLocalHost();
-        byte[] buffer = payload.toString().getBytes();
-        DatagramPacket sendDatagram = new DatagramPacket(buffer, buffer.length, receiverAddress, toPort);
-        socket.send(sendDatagram);
+        private Packet payload;
+
+        public PacketSender(Packet payload) {
+            this.payload = payload;
+        }
+
+        @Override
+        public void run() {
+            // loop forever until packet is ACKed
+            while (true) {
+
+                // send it unreliably
+                try {
+                    UnreliableSend(destPort, payload);
+                }
+                catch (IOException e) {
+                    // swallow this, we will resend if no ACK received
+                }
+
+                // print that we sent it
+                SenderPrinting.PrintSendPacket(payload.Number, payload.Data);
+
+                // sleep for the timeout
+                try {
+                    Thread.sleep(timeoutMs);
+                } catch (InterruptedException e) {
+                    // swallow this, if the thread is aborted we're screwed
+                }
+
+                // if it's been ACKed, we're done, otherwise print timeout
+                if (ackedPackets.containsKey(payload.Number)) {
+                    break;
+                }
+                else {
+                    SenderPrinting.PrintTimeout(payload.Number);
+                }
+            }
+        }
     }
 
     private class Packet {
@@ -272,38 +310,60 @@ public class SRNode {
 
     }
 
-    private void HandleReceivedAck(int packetNum) {
+    private Packet UnreliableReceive() throws IOException {
+        byte[] buffer = new byte[1024];
+        DatagramPacket receivedDatagram = new DatagramPacket(buffer, buffer.length);
+        socket.receive(receivedDatagram);
+
+        // simulate packet loss, done by receiver based on https://piazza.com/class#spring2013/csee4119/155
+        if (new Random().nextDouble() < lossRate) {
+            return null;
+        }
+
+        String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
+        return new Packet(msg, receivedDatagram.getPort(), sourcePort);
+    }
+
+    private void UnreliableSend(int toPort, Packet payload) throws IOException {
+        // all communication is on the same machine, so use local host
+        InetAddress receiverAddress = InetAddress.getLocalHost();
+        byte[] buffer = payload.toString().getBytes();
+        DatagramPacket sendDatagram = new DatagramPacket(buffer, buffer.length, receiverAddress, toPort);
+        socket.send(sendDatagram);
+    }
+
+    private void HandleReceivedAck(Packet packet) {
 
         // TODO remove this
-        if (ackedPackets.contains(packetNum) || packetNum < sendWindowBase || packetNum >= sendWindowBase + windowSize) {
+        if (ackedPackets.containsKey(packet.Number) || packet.Number < sendWindowBase || packet.Number >= sendWindowBase + windowSize) {
             System.out.println("AHHHHHHHHHHH");
-            System.out.println("packet " + packetNum + ", sendWindowBase " + sendWindowBase);
+            System.out.println("packet " + packet.Number + ", sendWindowBase " + sendWindowBase);
             return;
         }
 
         // mark the packet as ACKed
-        ackedPackets.add(packetNum);
+        ackedPackets.put(packet.Number, packet);
 
         // if this is the first packet in the window, shift window and send more packets
-        if (sendWindowBase == packetNum) {
+        if (sendWindowBase == packet.Number) {
 
             // shift the window up to the next unACKed packet
-            while (ackedPackets.contains(sendWindowBase)) {
+            while (ackedPackets.containsKey(sendWindowBase)) {
                 sendWindowBase++;
             }
 
             // print the ACK2
-            SenderPrinting.PrintAck2(packetNum, sendWindowBase, sendWindowBase + windowSize);
+            SenderPrinting.PrintAck2(packet.Number, sendWindowBase, sendWindowBase + windowSize);
 
             // send all pending packets that are inside the new window
             while (!dataToSend.isEmpty() && dataToSend.get(0).Number < sendWindowBase + windowSize) {
                 Packet nextPacketToSend = dataToSend.remove(0);
-                SendPacket(nextPacketToSend);
+                SendPacketOnNewThread(nextPacketToSend);
             }
         }
         else {
             // just print ACK1, don't move window or send anything new
-            SenderPrinting.PrintAck1(packetNum);
+            SenderPrinting.PrintAck1(packet.Number);
         }
 
     }
@@ -325,20 +385,24 @@ public class SRNode {
         }
 
         // if we have already received the packet, discard and resend ACK
-        if (rcvdPackets.contains(payload.Number)) {
+        if (rcvdPackets.containsKey(payload.Number)) {
             ReceiverPrinting.PrintDiscardPacket(payload.Number, payload.Data);
             SendAck(payload.Number, payload.SourcePort);
             return;
         }
 
         // mark the packet received
-        rcvdPackets.add(payload.Number);
+        rcvdPackets.put(payload.Number, payload);
 
         // if this is the first packet in our window, shift window and deliver data (in theory)
         if (payload.Number == rcvWindowBase) {
 
             // shift the window up to the next packet we need
-            while (rcvdPackets.contains(rcvWindowBase)) {
+            while (rcvdPackets.containsKey(rcvWindowBase)) {
+
+                // TODO remove this
+                System.out.println("MESSAGE: " + rcvdPackets.get(rcvWindowBase).Data);
+
                 rcvWindowBase++;
             }
 
@@ -377,55 +441,27 @@ public class SRNode {
         // send one character at a time
         for (char c : message.toCharArray()) {
 
-            final Packet payload = new Packet(Character.toString(c), sendNextSeqNum++, sourcePort, destPort, false);
+            final Packet payload = new Packet(Character.toString(c), sendNextSeqNum, sourcePort, destPort, false);
 
             // if the window is full, save it for later
             if (sendNextSeqNum >= sendWindowBase + windowSize) {
                 dataToSend.add(payload);
             }
             else {
-                SendPacket(payload);
+                SendPacketOnNewThread(payload);
             }
 
+            // increment sequence number
+            sendNextSeqNum++;
         }
     }
 
-    private void SendPacket(final Packet payload) {
-
-        ExecutorService executor = Executors.newSingleThreadExecutor();
-
-        // while the packet is not ACKed, loop forever
-        while (!ackedPackets.contains(payload.Number)) {
-
-            // send it unreliably
-            try {
-                UnreliableSend(destPort, payload);
-            }
-            catch (IOException e) {
-                // swallow this, we will resend if no ACK received
-            }
-
-            // print that we sent it
-            SenderPrinting.PrintSendPacket(payload.Number, payload.Data);
-
-            // start another thread that terminates if we get an ACK and throws TimeoutException if we don't
-            Future<Void> waitForAckFuture = executor.submit(new Callable<Void>() {
-                @Override
-                public Void call() throws Exception {
-                    while (!ackedPackets.contains(payload.Number)) {}
-                    return null;
-                }
-            });
-
-            try {
-                waitForAckFuture.get(timeoutMs, TimeUnit.MILLISECONDS);
-            }
-            catch (Exception e) {
-                // print that we timed out
-                SenderPrinting.PrintTimeout(payload.Number);
-            }
+    private void SendPacketOnNewThread(final Packet payload) {
+        new Thread(new PacketSender(payload)).start();
+        try {
+            Thread.sleep(2); // sleep really quickly to force window packets to be in order
         }
-
+        catch (Exception e){}
     }
 
 }
