@@ -10,6 +10,25 @@ import java.util.concurrent.*;
 
 public class SRNode {
 
+    public static void main(String[] args) {
+        try {
+            // get input arguments
+            int sourcePort = Integer.parseInt(args[0]);
+            int destPort = Integer.parseInt(args[1]);
+            int windowSize = Integer.parseInt(args[2]);
+            int timeoutMs = Integer.parseInt(args[3]);
+            double lossRate = Double.parseDouble(args[4]);
+
+            // make a node, which validates inputs, and kick off SR
+            SRNode node = new SRNode(sourcePort, destPort, windowSize, timeoutMs, lossRate);
+            node.StartSelectiveRepeat();
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+            System.err.println("Usage: SRNode <source-port> <destination-port> <window-size> <time-out> <loss-rate>");
+        }
+    }
+
     public SRNode(int sourcePort, int destPort, int windowSize, int timeoutMs, double lossRate) throws IllegalArgumentException, SocketException {
 
         if (lossRate < 0 || lossRate > 1 || sourcePort <= 0 || destPort <= 0 || windowSize <= 0 || timeoutMs <= 0) {
@@ -47,41 +66,6 @@ public class SRNode {
 
     private int rcvWindowBase;
     private HashMap<Integer, Packet> rcvdPackets;
-
-    public static void main(String[] args) {
-
-        // TODO remove this
-        if (args.length == 0){
-            args = new String[5];
-            args[0] = "11111";
-            args[1] = "22222";
-            args[2] = "10";
-            args[3] = "300";
-            args[4] = "0.56";
-        }
-
-        SRNode node;
-
-        try {
-            // get input arguments
-            int sourcePort = Integer.parseInt(args[0]);
-            int destPort = Integer.parseInt(args[1]);
-            int windowSize = Integer.parseInt(args[2]);
-            int timeoutMs = Integer.parseInt(args[3]);
-            double lossRate = Double.parseDouble(args[4]);
-
-            // make a node, which validates inputs
-            node = new SRNode(sourcePort, destPort, windowSize, timeoutMs, lossRate);
-        }
-        catch (Exception e) {
-            e.printStackTrace();
-            System.err.println("Usage: SRNode <source-port> <destination-port> <window-size> <time-out> <loss-rate>");
-            return;
-        }
-
-        // kick off selective repeat
-        node.StartSelectiveRepeat();
-    }
 
     public void StartSelectiveRepeat() {
         new Thread(new UdpListener()).start();
@@ -334,10 +318,10 @@ public class SRNode {
 
     private void HandleReceivedAck(Packet packet) {
 
-        // TODO remove this
         if (ackedPackets.containsKey(packet.Number) || packet.Number < sendWindowBase || packet.Number >= sendWindowBase + windowSize) {
-            System.out.println("AHHHHHHHHHHH");
-            System.out.println("packet " + packet.Number + ", sendWindowBase " + sendWindowBase);
+            System.out.println("THIS SHOULD NEVER HAPPEN!");
+            // note, we can assume sender/receiver windows are the same so that this will never happen
+            // see this post: https://piazza.com/class#spring2013/csee4119/152
             return;
         }
 
@@ -370,10 +354,10 @@ public class SRNode {
 
     private void HandleReceived(Packet payload) {
 
-        // TODO remove this
         if (payload.Number >= rcvWindowBase + windowSize) {
-            System.out.println("AHHHHHH");
-            System.out.println("packet " + payload.Number + ", rcvWindowBase " + rcvWindowBase);
+            System.out.println("THIS SHOULD NEVER HAPPEN!");
+            // note, we can assume sender/receiver windows are the same so that this will never happen
+            // see this post: https://piazza.com/class#spring2013/csee4119/152
             return;
         }
 
@@ -399,10 +383,7 @@ public class SRNode {
 
             // shift the window up to the next packet we need
             while (rcvdPackets.containsKey(rcvWindowBase)) {
-
-                // TODO remove this
-                System.out.println("MESSAGE: " + rcvdPackets.get(rcvWindowBase).Data);
-
+                System.out.println("DELIVER DATA: " + rcvdPackets.get(rcvWindowBase).Data); // TODO remove this
                 rcvWindowBase++;
             }
 
