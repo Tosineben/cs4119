@@ -82,33 +82,67 @@ public class SRNode {
     }
 
     private class UserListener implements Runnable {
+
         @Override
         public void run() {
             // accept user input forever
             while (true) {
                 String message = GetMessageFromUser();
                 if (message == null) {
-                    InvalidUserInput();
+                    System.err.println("Oops, I don't recognize that command, try again.");
                     continue;
                 }
                 SendMessage(message);
             }
         }
+
+        private String GetMessageFromUser() {
+
+            BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+
+            String userInput;
+
+            // read from std in
+            try {
+                userInput = br.readLine();
+            } catch (IOException e) {
+                return null;
+            }
+
+            // now make sure it is a valid "send" command, and parse out the message
+
+            int commandSeparator = userInput.indexOf(' ');
+
+            if (commandSeparator < 0) {
+                return null;
+            }
+
+            String command = userInput.substring(0, commandSeparator);
+            String message = userInput.substring(commandSeparator + 1);
+
+            if (!"send".equals(command)) {
+                return null;
+            }
+
+            return message;
+        }
+
     }
 
     private class UdpListener implements Runnable {
+
         @Override
         public void run() {
             // receive UDP messages forever
             while (true) {
                 Packet received;
                 try {
-                    received = new UnreliableUdp().Receive(socket);
+                    received = UnreliableReceive();
                 }
                 catch (IOException e) {
                     continue; // just swallow this, received a weird packet
                 }
-                if ("ACK".equals(received.Data)) {
+                if (received.IsAck) {
                     HandleReceivedAck(received.Number);
                 }
                 else {
@@ -118,24 +152,20 @@ public class SRNode {
         }
     }
 
-    private class UnreliableUdp {
+    private Packet UnreliableReceive() throws IOException {
+        byte[] buffer = new byte[1024];
+        DatagramPacket receivedDatagram = new DatagramPacket(buffer, buffer.length);
+        socket.receive(receivedDatagram);
+        String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
+        return new Packet(msg, receivedDatagram.getPort(), sourcePort);
+    }
 
-        public Packet Receive(DatagramSocket receiverSocket) throws IOException {
-            byte[] buffer = new byte[1024];
-            DatagramPacket receiverPacket = new DatagramPacket(buffer, buffer.length);
-            receiverSocket.receive(receiverPacket);
-            String msg = new String(buffer, 0, receiverPacket.getLength()).trim();
-            return new Packet(msg, receiverPacket.getPort(), receiverSocket.getLocalPort());
-        }
-
-        public void Send(DatagramSocket senderSocket, int toPort, Packet payload) throws IOException {
-            // all communication is on the same machine, so use local host
-            InetAddress receiverAddress = InetAddress.getLocalHost();
-            byte[] buffer = payload.toString().getBytes();
-            DatagramPacket packet = new DatagramPacket(buffer, buffer.length, receiverAddress, toPort);
-            senderSocket.send(packet);
-        }
-
+    private void UnreliableSend(int toPort, Packet payload) throws IOException {
+        // all communication is on the same machine, so use local host
+        InetAddress receiverAddress = InetAddress.getLocalHost();
+        byte[] buffer = payload.toString().getBytes();
+        DatagramPacket sendDatagram = new DatagramPacket(buffer, buffer.length, receiverAddress, toPort);
+        socket.send(sendDatagram);
     }
 
     private class Packet {
@@ -143,25 +173,44 @@ public class SRNode {
         public final int DestPort;
         public final String Data;
         public final int Number;
+        public final boolean IsAck;
 
-        public Packet(String data, int number, int sourcePort, int destPort) {
+        public Packet(String data, int number, int sourcePort, int destPort, boolean isAck) {
             Data = data;
             Number = number;
             SourcePort = sourcePort;
             DestPort = destPort;
+            IsAck = isAck;
         }
 
         public Packet(String pcktAsString, int sourcePort, int destPort) {
-            int separator = pcktAsString.indexOf('_');
-            Number = Integer.parseInt(pcktAsString.substring(0, separator));
-            Data = pcktAsString.substring(separator + 1);
             SourcePort = sourcePort;
             DestPort = destPort;
+
+            int separator = pcktAsString.indexOf('_');
+            String firstPart = pcktAsString.substring(0, separator);
+            String secondPart = pcktAsString.substring(separator + 1);
+
+            if ("ACK".equals(firstPart)) {
+                IsAck = true;
+                Number = Integer.parseInt(secondPart);
+                Data = null;
+            }
+            else {
+                IsAck = false;
+                Number = Integer.parseInt(firstPart);
+                Data = secondPart;
+            }
         }
 
         @Override
         public String toString() {
-            return Number + "_" + Data;
+            if (IsAck) {
+                return "ACK_" + Number; // ACK packets have special prefix to identify them
+            }
+            else {
+                return Number + "_" + Data;
+            }
         }
     }
 
@@ -312,11 +361,11 @@ public class SRNode {
         ReceiverPrinting.PrintSendAck(packetNum);
 
         // make the ACK packet
-        Packet ackPacket = new Packet("ACK", packetNum, sourcePort, toPort);
+        Packet ackPacket = new Packet(null, packetNum, sourcePort, toPort, true);
 
         // send it unreliably
         try {
-            new UnreliableUdp().Send(socket, toPort, ackPacket);
+            UnreliableSend(toPort, ackPacket);
         }
         catch (IOException e) {
             // swallow this, ACK will be resent if necessary
@@ -328,7 +377,7 @@ public class SRNode {
         // send one character at a time
         for (char c : message.toCharArray()) {
 
-            final Packet payload = new Packet(Character.toString(c), sendNextSeqNum++, sourcePort, destPort);
+            final Packet payload = new Packet(Character.toString(c), sendNextSeqNum++, sourcePort, destPort, false);
 
             // if the window is full, save it for later
             if (sendNextSeqNum >= sendWindowBase + windowSize) {
@@ -350,7 +399,7 @@ public class SRNode {
 
             // send it unreliably
             try {
-                new UnreliableUdp().Send(socket, destPort, payload);
+                UnreliableSend(destPort, payload);
             }
             catch (IOException e) {
                 // swallow this, we will resend if no ACK received
@@ -377,41 +426,6 @@ public class SRNode {
             }
         }
 
-    }
-
-    private static String GetMessageFromUser() {
-
-        BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
-
-        String userInput;
-
-        // read from std in
-        try {
-            userInput = br.readLine();
-        } catch (IOException e) {
-            return null;
-        }
-
-        // now make sure it is a valid "send" command, and parse out the message
-
-        int commandSeparator = userInput.indexOf(' ');
-
-        if (commandSeparator < 0) {
-            return null;
-        }
-
-        String command = userInput.substring(0, commandSeparator);
-        String message = userInput.substring(commandSeparator + 1);
-
-        if (!"send".equals(command)) {
-            return null;
-        }
-
-        return message;
-    }
-
-    private static void InvalidUserInput() {
-        System.err.println("Oops, I don't recognize that command, try again.");
     }
 
 }
