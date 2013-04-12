@@ -24,15 +24,15 @@ public class SRNode {
 
         this.sendNextSeqNum = 0;
         this.sendWindowBase = 0;
-        this.sendWindow = new Packet[windowSize];
         this.ackedPackets = new HashSet<Integer>();
+        this.dataToSend = new ArrayList<Packet>();
 
         this.rcvWindowBase = 0;
-        this.rcvWindow = new Packet[windowSize];
+        this.rcvdPackets = new HashSet<Integer>();
     }
 
     private int sourcePort;     // send msgs from this port
-    private int destPort;       // receive msgs from this port
+    private int destPort;       // send msgs to this port
     private int windowSize;     // length of the ACK window
     private int timeoutMs;      // packet timeout
     private double lossRate;    // packet loss rate
@@ -40,13 +40,11 @@ public class SRNode {
 
     private int sendNextSeqNum;
     private int sendWindowBase;
-    private Packet[] sendWindow;
-    private HashSet<Integer> ackedPackets = new HashSet<Integer>();
-    private List<Packet> dataToSend = new ArrayList<Packet>();
+    private HashSet<Integer> ackedPackets;
+    private List<Packet> dataToSend;
 
     private int rcvWindowBase;
-    private Packet[] rcvWindow;
-    private HashSet<Integer> rcvdPackets = new HashSet<Integer>();
+    private HashSet<Integer> rcvdPackets;
 
     public static void main(String[] args) {
 
@@ -68,10 +66,8 @@ public class SRNode {
             int timeoutMs = Integer.parseInt(args[3]);
             double lossRate = Double.parseDouble(args[4]);
 
-            // make a node
+            // make a node and kick off selective repeat
             SRNode node = new SRNode(sourcePort, destPort, windowSize, timeoutMs, lossRate);
-
-            // kick off selective repeat
             node.StartSelectiveRepeat();
         }
         catch (Exception e) {
@@ -105,23 +101,19 @@ public class SRNode {
         public void run() {
             // receive UDP messages forever
             while (true) {
-
                 Packet received;
                 try {
                     received = new UnreliableUdp().Receive(socket);
                 }
                 catch (IOException e) {
-                    // swallow this, received a weird packet
-                    continue;
+                    continue; // just swallow this, received a weird packet
                 }
-
                 if ("ACK".equals(received.Data)) {
                     HandleReceivedAck(received.Number);
                 }
                 else {
                     HandleReceived(received);
                 }
-
             }
         }
     }
@@ -133,10 +125,10 @@ public class SRNode {
             DatagramPacket receiverPacket = new DatagramPacket(buffer, buffer.length);
             receiverSocket.receive(receiverPacket);
             String msg = new String(buffer, 0, receiverPacket.getLength()).trim();
-            return new Packet(msg, receiverPacket.getPort(), receiverSocket.getPort());
+            return new Packet(msg, receiverPacket.getPort(), receiverSocket.getLocalPort());
         }
 
-        private void Send(DatagramSocket senderSocket, int toPort, Packet payload) throws IOException {
+        public void Send(DatagramSocket senderSocket, int toPort, Packet payload) throws IOException {
             // all communication is on the same machine, so use local host
             InetAddress receiverAddress = InetAddress.getLocalHost();
             byte[] buffer = payload.toString().getBytes();
@@ -162,7 +154,7 @@ public class SRNode {
         public Packet(String pcktAsString, int sourcePort, int destPort) {
             int separator = pcktAsString.indexOf('_');
             Number = Integer.parseInt(pcktAsString.substring(0, separator));
-            Data = pcktAsString.substring(separator);
+            Data = pcktAsString.substring(separator + 1);
             SourcePort = sourcePort;
             DestPort = destPort;
         }
@@ -232,61 +224,103 @@ public class SRNode {
     }
 
     private void HandleReceivedAck(int packetNum) {
-        if (sendWindowBase == packetNum) {
-            // shift the window
-            sendWindowBase++;
 
-            // print that we received ACK2
-            SenderPrinting.PrintAck2(packetNum, sendWindowBase, sendWindowBase + windowSize);
-
-            // send the next packet
-            if (!dataToSend.isEmpty()) {
-                Packet nextPacketToSend = dataToSend.remove(0);
-                EnsurePacketIsSent(nextPacketToSend);
-            }
-        }
-        else {
-            // print that we received ACK1
-            SenderPrinting.PrintAck1(packetNum);
-
-            // do not shift window or send any additional packets
+        // TODO remove this
+        if (ackedPackets.contains(packetNum) || packetNum < sendWindowBase || packetNum >= sendWindowBase + windowSize) {
+            System.out.println("AHHHHHHHHHHH");
+            System.out.println("packet " + packetNum + ", sendWindowBase " + sendWindowBase);
+            return;
         }
 
         // mark the packet as ACKed
         ackedPackets.add(packetNum);
+
+        // if this is the first packet in the window, shift window and send more packets
+        if (sendWindowBase == packetNum) {
+
+            // shift the window up to the next unACKed packet
+            while (ackedPackets.contains(sendWindowBase)) {
+                sendWindowBase++;
+            }
+
+            // print the ACK2
+            SenderPrinting.PrintAck2(packetNum, sendWindowBase, sendWindowBase + windowSize);
+
+            // send all pending packets that are inside the new window
+            while (!dataToSend.isEmpty() && dataToSend.get(0).Number < sendWindowBase + windowSize) {
+                Packet nextPacketToSend = dataToSend.remove(0);
+                SendPacket(nextPacketToSend);
+            }
+        }
+        else {
+            // just print ACK1, don't move window or send anything new
+            SenderPrinting.PrintAck1(packetNum);
+        }
+
     }
 
     private void HandleReceived(Packet payload) {
 
+        // TODO remove this
+        if (payload.Number >= rcvWindowBase + windowSize) {
+            System.out.println("AHHHHHH");
+            System.out.println("packet " + payload.Number + ", rcvWindowBase " + rcvWindowBase);
+            return;
+        }
+
         // if the packet is before our window, discard and resend ACK
         if (payload.Number < rcvWindowBase) {
             ReceiverPrinting.PrintDiscardPacket(payload.Number, payload.Data);
-            SendAck(payload.Number);
+            SendAck(payload.Number, payload.SourcePort);
             return;
         }
 
         // if we have already received the packet, discard and resend ACK
         if (rcvdPackets.contains(payload.Number)) {
             ReceiverPrinting.PrintDiscardPacket(payload.Number, payload.Data);
-            SendAck(payload.Number);
+            SendAck(payload.Number, payload.SourcePort);
             return;
-        }
-
-        // if this is the packet at the bottom of our window, shift it
-        if (payload.Number == rcvWindowBase) {
-            rcvWindowBase++;
-            ReceiverPrinting.PrintReceive2(payload.Number, payload.Data, rcvWindowBase, rcvWindowBase + windowSize);
-        }
-        else {
-            ReceiverPrinting.PrintReceive1(payload.Number, payload.Data);
         }
 
         // mark the packet received
         rcvdPackets.add(payload.Number);
+
+        // if this is the first packet in our window, shift window and deliver data (in theory)
+        if (payload.Number == rcvWindowBase) {
+
+            // shift the window up to the next packet we need
+            while (rcvdPackets.contains(rcvWindowBase)) {
+                rcvWindowBase++;
+            }
+
+            // print Receive2
+            ReceiverPrinting.PrintReceive2(payload.Number, payload.Data, rcvWindowBase, rcvWindowBase + windowSize);
+        }
+        else {
+            // just print Receive1, don't shift window or deliver data
+            ReceiverPrinting.PrintReceive1(payload.Number, payload.Data);
+        }
+
+        // send an ACK
+        SendAck(payload.Number, payload.SourcePort);
+
     }
 
-    private void SendAck(int packetNum) {
+    private void SendAck(int packetNum, int toPort) {
+
+        // print that we're sending an ACK
         ReceiverPrinting.PrintSendAck(packetNum);
+
+        // make the ACK packet
+        Packet ackPacket = new Packet("ACK", packetNum, sourcePort, toPort);
+
+        // send it unreliably
+        try {
+            new UnreliableUdp().Send(socket, toPort, ackPacket);
+        }
+        catch (IOException e) {
+            // swallow this, ACK will be resent if necessary
+        }
     }
 
     private void SendMessage(final String message) {
@@ -301,13 +335,13 @@ public class SRNode {
                 dataToSend.add(payload);
             }
             else {
-                EnsurePacketIsSent(payload);
+                SendPacket(payload);
             }
 
         }
     }
 
-    private void EnsurePacketIsSent(final Packet payload) {
+    private void SendPacket(final Packet payload) {
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
 
@@ -325,7 +359,7 @@ public class SRNode {
             // print that we sent it
             SenderPrinting.PrintSendPacket(payload.Number, payload.Data);
 
-            // on another thread, wait for ACK or timeout
+            // start another thread that terminates if we get an ACK and throws TimeoutException if we don't
             Future<Void> waitForAckFuture = executor.submit(new Callable<Void>() {
                 @Override
                 public Void call() throws Exception {
@@ -358,14 +392,22 @@ public class SRNode {
             return null;
         }
 
-        String[] inputParts = userInput.split(" ");
+        // now make sure it is a valid "send" command, and parse out the message
 
-        // make sure we have valid command input
-        if (inputParts.length != 2 || !"send".equals(inputParts[0])) {
+        int commandSeparator = userInput.indexOf(' ');
+
+        if (commandSeparator < 0) {
             return null;
         }
 
-        return inputParts[1];
+        String command = userInput.substring(0, commandSeparator);
+        String message = userInput.substring(commandSeparator + 1);
+
+        if (!"send".equals(command)) {
+            return null;
+        }
+
+        return message;
     }
 
     private static void InvalidUserInput() {
