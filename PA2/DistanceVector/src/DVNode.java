@@ -72,6 +72,13 @@ public class DVNode {
         System.out.println(toPrint);
     }
 
+    /*
+    In the output of the routing table Node <nodek> -> (<weight>) - refers to the
+    neighbor of Node <nodei> which has a direction connection. For nodes that are
+    not directly connected Node <nodex> [next <nodea>] -> (<weight>) - refers to
+    the neighbor of Node <nodei> which is not directly connected to <nodei> but
+    is connected via Node <nodea> which is the next node in succession.
+    */
     // TODO figure out how to store DV table...
     private static void PrintRoutingTable(int nodePort, ArrayList<Neighbor> neighbors, HashMap<String, Neighbor> otherDudes) {
         long timestamp = Calendar.getInstance().getTimeInMillis();
