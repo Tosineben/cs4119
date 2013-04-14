@@ -46,8 +46,9 @@ public class DVNode {
     public DVNode(int port, HashMap<Integer, Double> neighbors) throws SocketException {
         this.port = port;
         this.socket = new DatagramSocket(port);
-        this.routingTable = new HashMap<Integer, RoutingTableEntry>();
         this.neighbors = new HashMap<Integer, Neighbor>();
+        this.routingTable = new HashMap<Integer, RoutingTableEntry>();
+
         for(Map.Entry<Integer, Double> neighbor : neighbors.entrySet()) {
             Neighbor n = new Neighbor(neighbor.getKey(), neighbor.getValue());
             this.neighbors.put(n.Port, n);
@@ -62,7 +63,7 @@ public class DVNode {
 
         public Neighbor(int port, double weight) {
             Port = port;
-            Weight = RoundWeight(weight);
+            Weight = (double)Math.round(weight * 1000)/1000; // round to 3 decimal places
             Routes = new HashMap<Integer, RoutingTableEntry>();
         }
     }
@@ -76,36 +77,7 @@ public class DVNode {
         public RoutingTableEntry(int toPort, int neighborPort, double weight) {
             ToPort = toPort;
             NeighborPort = neighborPort;
-            Weight = RoundWeight(weight);
-        }
-    }
-
-    private class Packet {
-        public final int SourcePort;
-        public final int DestPort;
-        public final String Data;
-
-        public Packet(String data, int sourcePort, int destPort) {
-            Data = data;
-            SourcePort = sourcePort;
-            DestPort = destPort;
-        }
-    }
-
-    private class UdpListener implements Runnable {
-        @Override
-        public void run() {
-            // receive UDP messages forever
-            while (true) {
-                Packet received;
-                try {
-                    received = UnreliableReceive();
-                }
-                catch (IOException e) {
-                    continue; // just swallow this, received a weird packet
-                }
-                HandleReceived(received);
-            }
+            Weight = (double)Math.round(weight * 1000)/1000; // round to 3 decimal places
         }
     }
 
@@ -116,24 +88,44 @@ public class DVNode {
         // print the routing table
         Printing.PrintRoutingTable(port, routingTable);
 
-        // listen for incoming updates
-        new Thread(new UdpListener()).start();
-
         // start broadcast if we're last
         if (isLast) {
             Broadcast();
         }
+
+        // listen for incoming updates
+        ListenForUpdates();
     }
 
-    private void HandleReceived(Packet payload) {
+    private void ListenForUpdates() {
+        // receive updates forever
+        while (true) {
+
+            byte[] buffer = new byte[1024];
+            DatagramPacket receivedDatagram = new DatagramPacket(buffer, buffer.length);
+
+            try {
+                socket.receive(receivedDatagram);
+            }
+            catch (IOException e) {
+                continue; // just swallow this, received a weird packet
+            }
+
+            int fromPort = receivedDatagram.getPort();
+            String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
+
+            HandleUpdate(fromPort, msg);
+        }
+    }
+
+    private void HandleUpdate(int fromPort, String message) {
 
         // print that we received
-        Printing.PrintRcvMessage(payload.DestPort, payload.SourcePort);
+        Printing.PrintRcvMessage(port, fromPort);
 
         // if we're receiving a message from a non-neighbor, ignore it
         // note, this should never happen, just a safety check
-        if (!neighbors.containsKey(payload.SourcePort)) {
-            System.out.println("THIS SHOULD NOT HAPPEN!"); // TODO remove
+        if (!neighbors.containsKey(fromPort)) {
             return;
         }
 
@@ -141,7 +133,7 @@ public class DVNode {
 
         // parse the message into the neighbors routing table
         try {
-            for (String entryString : payload.Data.split(" ")) {
+            for (String entryString : message.split(" ")) {
                 String[] entryParts = entryString.split(",");
 
                 int toPort = Integer.parseInt(entryParts[0]);
@@ -157,7 +149,7 @@ public class DVNode {
         }
 
         // update the neighbors routing table
-        neighbors.get(payload.SourcePort).Routes = neighborRoutingTable;
+        neighbors.get(fromPort).Routes = neighborRoutingTable;
 
         // update routing table - if it changed print and broadcast
         if (EnsureRoutingTableIsUpdated()) {
@@ -167,10 +159,6 @@ public class DVNode {
         else if (!sentBroadcast) { // we need to broadcast at least once or DV initialization fails
             Broadcast();
         }
-    }
-
-    private double RoundWeight(double weight) {
-        return (double)Math.round(weight * 1000)/1000;
     }
 
     // updates routing table based on neighbor info, returns true if table changed
@@ -237,22 +225,27 @@ public class DVNode {
 
     private void Broadcast() {
         for (int neighborPort : neighbors.keySet()) {
-
             String message = ConstructMessageForNeighbor(neighborPort);
-
-            try {
-                UnreliableSend(neighborPort, message);
-            }
-            catch (Exception e) {
-                // swallow this, assignment says no packets will be dropped in this part
-            }
-
-            // print that we sent it
+            ReliableSend(neighborPort, message);
             Printing.PrintSendMessage(port, neighborPort);
         }
 
         // mark that we have sent at least 1 broadcast
         sentBroadcast = true;
+    }
+
+    // we assume sending is reliable for DVNode
+    private void ReliableSend(int toPort, String message) {
+        try {
+            // all communication is on the same machine, so use local host
+            InetAddress receiverAddress = InetAddress.getLocalHost();
+            byte[] buffer = message.getBytes();
+            DatagramPacket datagram = new DatagramPacket(buffer, buffer.length, receiverAddress, toPort);
+            socket.send(datagram);
+        }
+        catch (Exception e) {
+            // just swallow this, assignment says to assume UDP is reliable for this part
+        }
     }
 
     private static class Printing {
@@ -283,23 +276,6 @@ public class DVNode {
             System.out.println(toPrint);
         }
 
-    }
-
-    private void UnreliableSend(int toPort, String message) throws IOException {
-        // all communication is on the same machine, so use local host
-        InetAddress receiverAddress = InetAddress.getLocalHost();
-        byte[] buffer = message.getBytes();
-        DatagramPacket datagram = new DatagramPacket(buffer, buffer.length, receiverAddress, toPort);
-        socket.send(datagram);
-    }
-
-    private Packet UnreliableReceive() throws IOException {
-        byte[] buffer = new byte[1024];
-        DatagramPacket receivedDatagram = new DatagramPacket(buffer, buffer.length);
-        socket.receive(receivedDatagram);
-        int fromPort = receivedDatagram.getPort();
-        String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
-        return new Packet(msg, fromPort, port);
     }
 
 }

@@ -6,7 +6,6 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.SocketException;
 import java.util.*;
-import java.util.concurrent.*;
 
 public class SRNode {
 
@@ -30,7 +29,7 @@ public class SRNode {
             return;
         }
 
-        node.StartSelectiveRepeat();
+        node.Initialize();
     }
 
     public SRNode(int sourcePort, int destPort, int windowSize, int timeoutMs, double lossRate) throws IllegalArgumentException, SocketException {
@@ -71,9 +70,12 @@ public class SRNode {
     private int rcvWindowBase;
     private HashMap<Integer, Packet> rcvdPackets;
 
-    public void StartSelectiveRepeat() {
-        new Thread(new UdpListener()).start();
+    public void Initialize() {
+        // listen for user input on another thread
         new Thread(new UserListener()).start();
+
+        // listen for udp updates on this thread
+        ListenForUpdates();
     }
 
     private class UserListener implements Runnable {
@@ -124,30 +126,41 @@ public class SRNode {
 
     }
 
-    private class UdpListener implements Runnable {
-        @Override
-        public void run() {
-            // receive UDP messages forever
-            while (true) {
+    private void ListenForUpdates() {
+        // receive UDP messages forever
+        while (true) {
 
-                Packet received;
+            byte[] buffer = new byte[1024];
+            DatagramPacket receivedDatagram = new DatagramPacket(buffer, buffer.length);
+
+            try {
+                socket.receive(receivedDatagram);
+            }
+            catch (IOException e) {
+                continue; // just swallow this, received a weird packet
+            }
+
+            // simulate packet loss, done by receiver based on https://piazza.com/class#spring2013/csee4119/155
+            if (new Random().nextDouble() < lossRate) {
+                continue;
+            }
+
+            int fromPort = receivedDatagram.getPort();
+            String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
+
+            if (msg.startsWith("ACK")) {
+                int packetNum;
                 try {
-                    received = UnreliableReceive();
+                    packetNum = Integer.parseInt(msg.split(",")[1]);
                 }
-                catch (IOException e) {
-                    continue; // just swallow this, received a weird packet
+                catch (Exception e) {
+                    continue; // this should never happen, invalid ACK message
                 }
-
-                if (received == null) {
-                    continue; // this means the packet was "lost"
-                }
-
-                if (received.IsAck) {
-                    HandleReceivedAck(received);
-                }
-                else {
-                    HandleReceived(received);
-                }
+                HandleReceivedAck(packetNum);
+            }
+            else {
+                Packet p = new Packet(msg, fromPort, sourcePort);
+                HandleReceived(p);
             }
         }
     }
@@ -166,12 +179,7 @@ public class SRNode {
             while (true) {
 
                 // send it unreliably
-                try {
-                    UnreliableSend(destPort, payload);
-                }
-                catch (IOException e) {
-                    // swallow this, we will resend if no ACK received
-                }
+                UnreliableSend(destPort, payload.toString());
 
                 // print that we sent it
                 SenderPrinting.PrintSendPacket(payload.Number, payload.Data);
@@ -199,14 +207,12 @@ public class SRNode {
         public final int DestPort;
         public final String Data;
         public final int Number;
-        public final boolean IsAck;
 
-        public Packet(String data, int number, int sourcePort, int destPort, boolean isAck) {
+        public Packet(String data, int number, int sourcePort, int destPort) {
             Data = data;
             Number = number;
             SourcePort = sourcePort;
             DestPort = destPort;
-            IsAck = isAck;
         }
 
         public Packet(String pcktAsString, int sourcePort, int destPort) {
@@ -214,29 +220,13 @@ public class SRNode {
             DestPort = destPort;
 
             int separator = pcktAsString.indexOf('_');
-            String firstPart = pcktAsString.substring(0, separator);
-            String secondPart = pcktAsString.substring(separator + 1);
-
-            if ("ACK".equals(firstPart)) {
-                IsAck = true;
-                Number = Integer.parseInt(secondPart);
-                Data = null;
-            }
-            else {
-                IsAck = false;
-                Number = Integer.parseInt(firstPart);
-                Data = secondPart;
-            }
+            Number = Integer.parseInt(pcktAsString.substring(0, separator));
+            Data = pcktAsString.substring(separator + 1);
         }
 
         @Override
         public String toString() {
-            if (IsAck) {
-                return "ACK_" + Number; // ACK packets have special prefix to identify them
-            }
-            else {
-                return Number + "_" + Data;
-            }
+            return Number + "_" + Data;
         }
     }
 
@@ -298,31 +288,22 @@ public class SRNode {
 
     }
 
-    private Packet UnreliableReceive() throws IOException {
-        byte[] buffer = new byte[1024];
-        DatagramPacket receivedDatagram = new DatagramPacket(buffer, buffer.length);
-        socket.receive(receivedDatagram);
-
-        // simulate packet loss, done by receiver based on https://piazza.com/class#spring2013/csee4119/155
-        if (new Random().nextDouble() < lossRate) {
-            return null;
+    private void UnreliableSend(int toPort, String message) {
+        try {
+            // all communication is on the same machine, so use local host
+            InetAddress receiverAddress = InetAddress.getLocalHost();
+            byte[] buffer = message.getBytes();
+            DatagramPacket sendDatagram = new DatagramPacket(buffer, buffer.length, receiverAddress, toPort);
+            socket.send(sendDatagram);
         }
-
-        String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
-        return new Packet(msg, receivedDatagram.getPort(), sourcePort);
+        catch (IOException e) {
+            // swallow this, we will resend if needed
+        }
     }
 
-    private void UnreliableSend(int toPort, Packet payload) throws IOException {
-        // all communication is on the same machine, so use local host
-        InetAddress receiverAddress = InetAddress.getLocalHost();
-        byte[] buffer = payload.toString().getBytes();
-        DatagramPacket sendDatagram = new DatagramPacket(buffer, buffer.length, receiverAddress, toPort);
-        socket.send(sendDatagram);
-    }
+    private void HandleReceivedAck(int packetNum) {
 
-    private void HandleReceivedAck(Packet packet) {
-
-        if (ackedPackets.containsKey(packet.Number) || packet.Number < sendWindowBase || packet.Number >= sendWindowBase + windowSize) {
+        if (ackedPackets.containsKey(packetNum) || packetNum < sendWindowBase || packetNum >= sendWindowBase + windowSize) {
             System.out.println("THIS SHOULD NEVER HAPPEN!");
             // note, we can assume sender/receiver windows are the same so that this will never happen
             // see this post: https://piazza.com/class#spring2013/csee4119/152
@@ -330,10 +311,10 @@ public class SRNode {
         }
 
         // mark the packet as ACKed
-        ackedPackets.put(packet.Number, packet);
+        ackedPackets.put(packetNum, null);
 
         // if this is the first packet in the window, shift window and send more packets
-        if (sendWindowBase == packet.Number) {
+        if (sendWindowBase == packetNum) {
 
             // shift the window up to the next unACKed packet
             while (ackedPackets.containsKey(sendWindowBase)) {
@@ -341,7 +322,7 @@ public class SRNode {
             }
 
             // print the ACK2
-            SenderPrinting.PrintAck2(packet.Number, sendWindowBase, sendWindowBase + windowSize);
+            SenderPrinting.PrintAck2(packetNum, sendWindowBase, sendWindowBase + windowSize);
 
             // send all pending packets that are inside the new window
             while (!dataToSend.isEmpty() && dataToSend.get(0).Number < sendWindowBase + windowSize) {
@@ -351,7 +332,7 @@ public class SRNode {
         }
         else {
             // just print ACK1, don't move window or send anything new
-            SenderPrinting.PrintAck1(packet.Number);
+            SenderPrinting.PrintAck1(packetNum);
         }
 
     }
@@ -409,16 +390,8 @@ public class SRNode {
         // print that we're sending an ACK
         ReceiverPrinting.PrintSendAck(packetNum);
 
-        // make the ACK packet
-        Packet ackPacket = new Packet(null, packetNum, sourcePort, toPort, true);
-
         // send it unreliably
-        try {
-            UnreliableSend(toPort, ackPacket);
-        }
-        catch (IOException e) {
-            // swallow this, ACK will be resent if necessary
-        }
+        UnreliableSend(toPort, "ACK," + packetNum);
     }
 
     private void SendMessage(final String message) {
@@ -426,7 +399,7 @@ public class SRNode {
         // send one character at a time
         for (char c : message.toCharArray()) {
 
-            final Packet payload = new Packet(Character.toString(c), sendNextSeqNum, sourcePort, destPort, false);
+            Packet payload = new Packet(Character.toString(c), sendNextSeqNum, sourcePort, destPort);
 
             // if the window is full, save it for later
             if (sendNextSeqNum >= sendWindowBase + windowSize) {
