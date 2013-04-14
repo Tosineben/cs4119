@@ -11,6 +11,8 @@ import java.util.concurrent.*;
 public class SRNode {
 
     public static void main(String[] args) {
+        SRNode node;
+
         try {
             // get input arguments
             int sourcePort = Integer.parseInt(args[0]);
@@ -20,13 +22,15 @@ public class SRNode {
             double lossRate = Double.parseDouble(args[4]);
 
             // make a node, which validates inputs, and kick off SR
-            SRNode node = new SRNode(sourcePort, destPort, windowSize, timeoutMs, lossRate);
-            node.StartSelectiveRepeat();
+            node = new SRNode(sourcePort, destPort, windowSize, timeoutMs, lossRate);
         }
         catch (Exception e) {
             e.printStackTrace();
             System.err.println("Usage: SRNode <source-port> <destination-port> <window-size> <time-out> <loss-rate>");
+            return;
         }
+
+        node.StartSelectiveRepeat();
     }
 
     public SRNode(int sourcePort, int destPort, int windowSize, int timeoutMs, double lossRate) throws IllegalArgumentException, SocketException {

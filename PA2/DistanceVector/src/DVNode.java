@@ -4,114 +4,302 @@ import java.util.*;
 
 public class DVNode {
 
-    // TODO not static
-    private static class Neighbor {
-
-        public Neighbor(int port, double weight) {
-            Port = port;
-            Weight = weight;
-        }
-
-        public int Port;      // port on which neighbor is listening
-        public double Weight; // weight of link between this node and neighbor
-    }
-
     public static void main(String[] args) {
 
-        // TODO remove debug
-        if (args.length == 0){
-            args = new String[7];
-            args[0] = "1111";
-            args[1] = "2222";
-            args[2] = "1.4";
-            args[3] = "3333";
-            args[4] = "1.5";
-            args[5] = "4444";
-            args[6] = "0.9";
-        }
-
-        HashMap<Integer, Double> neighborWeights = new HashMap<Integer, Double>();
-
-        int port;                       // listen on this port
-        ArrayList<Neighbor> neighbors;  // these are my neighbors
-        boolean last;                   // if last, i complete graph, so start broadcast
+        DVNode node;
+        boolean last;
 
         try {
-            port = Integer.parseInt(args[0]);
+            int port = Integer.parseInt(args[0]);
 
-            neighbors = new ArrayList<Neighbor>();
+            HashMap<Integer, Double> neighbors = new HashMap<Integer, Double>();
 
             // count args by two's, getting info for each neighbor
-            for (int i = 1; i < args.length; i += 2) {
+            for (int i = 1; i < args.length - 1; i += 2) {
                 int nPort = Integer.parseInt(args[i]);
                 double nWeight = Double.parseDouble(args[i + 1]);
-                neighbors.add(new Neighbor(nPort, nWeight));
-                neighborWeights.put(nPort, nWeight);
+                if (nWeight < 0) {
+                    throw new IllegalArgumentException("Cannot have negative weight.");
+                }
+                neighbors.put(nPort, nWeight);
             }
 
+            node = new DVNode(port, neighbors);
             last = "last".equals(args[args.length - 1]);
         }
         catch (Exception e) {
+            e.printStackTrace();
             System.err.println("Usage: <port-number> <neighbor1port> <neighbor1weight> .... <neighboriport> <neighboriweight> [last]?");
             return;
         }
 
-
+        node.Initialize(last);
 
     }
 
-    private static void PrintSendMessage(int nodeFromListenPort, int nodeToListenPort) {
-        long timestamp = Calendar.getInstance().getTimeInMillis();
-        String toPrint = timestamp + " Message sent from Node " + nodeFromListenPort + " to Node " + nodeToListenPort;
-        System.out.println(toPrint);
-    }
+    private final int port;
+    private boolean sentBroadcast;
+    private DatagramSocket socket;
+    private HashMap<Integer, RoutingTableEntry> routingTable;
+    private HashMap<Integer, Neighbor> neighbors;
 
-    private static void PrintRcvMessage(int nodeReceivedListenPort, int nodeFromListPort) {
-        long timestamp = Calendar.getInstance().getTimeInMillis();
-        String toPrint = timestamp + " Message received at Node " + nodeReceivedListenPort + " from Node " + nodeFromListPort;
-        System.out.println(toPrint);
-    }
-
-    /*
-    In the output of the routing table Node <nodek> -> (<weight>) - refers to the
-    neighbor of Node <nodei> which has a direction connection. For nodes that are
-    not directly connected Node <nodex> [next <nodea>] -> (<weight>) - refers to
-    the neighbor of Node <nodei> which is not directly connected to <nodei> but
-    is connected via Node <nodea> which is the next node in succession.
-    */
-    // TODO figure out how to store DV table...
-    private static void PrintRoutingTable(int nodePort, ArrayList<Neighbor> neighbors, HashMap<String, Neighbor> otherDudes) {
-        long timestamp = Calendar.getInstance().getTimeInMillis();
-        String toPrint = timestamp + " Node " + nodePort + " - Routing Table";
-        for (Neighbor n : neighbors) {
-            // TODO: round weights to 3 decimal places
-            toPrint += "\nNode " + n.Port + " -> (" + n.Weight + " )";
+    public DVNode(int port, HashMap<Integer, Double> neighbors) throws SocketException {
+        this.port = port;
+        this.socket = new DatagramSocket(port);
+        this.routingTable = new HashMap<Integer, RoutingTableEntry>();
+        this.neighbors = new HashMap<Integer, Neighbor>();
+        for(Map.Entry<Integer, Double> neighbor : neighbors.entrySet()) {
+            Neighbor n = new Neighbor(neighbor.getKey(), neighbor.getValue());
+            this.neighbors.put(n.Port, n);
         }
-        for (String port : otherDudes.keySet()) {
-            Neighbor next = otherDudes.get(port);
-            toPrint += "\nNode " + port + " [next " + next.Port + "] -> (" + next.Weight + ")";
-        }
-        System.out.println(toPrint);
     }
 
+    // info we need to store about each neighbor to compute routing table
+    private class Neighbor {
+        public final int Port;
+        public double Weight;
+        public HashMap<Integer, RoutingTableEntry> Routes;
 
-    private static void UnreliableSend(DatagramSocket senderSocket, int toPort, String message) throws IOException {
+        public Neighbor(int port, double weight) {
+            Port = port;
+            Weight = RoundWeight(weight);
+            Routes = new HashMap<Integer, RoutingTableEntry>();
+        }
+    }
+
+    // routing used by this node
+    private class RoutingTableEntry {
+        public final int ToPort;
+        public int NeighborPort;
+        public final double Weight;
+
+        public RoutingTableEntry(int toPort, int neighborPort, double weight) {
+            ToPort = toPort;
+            NeighborPort = neighborPort;
+            Weight = RoundWeight(weight);
+        }
+    }
+
+    private class Packet {
+        public final int SourcePort;
+        public final int DestPort;
+        public final String Data;
+
+        public Packet(String data, int sourcePort, int destPort) {
+            Data = data;
+            SourcePort = sourcePort;
+            DestPort = destPort;
+        }
+    }
+
+    private class UdpListener implements Runnable {
+        @Override
+        public void run() {
+            // receive UDP messages forever
+            while (true) {
+                Packet received;
+                try {
+                    received = UnreliableReceive();
+                }
+                catch (IOException e) {
+                    continue; // just swallow this, received a weird packet
+                }
+                HandleReceived(received);
+            }
+        }
+    }
+
+    public void Initialize(boolean isLast) {
+        // set up the routing table
+        EnsureRoutingTableIsUpdated();
+
+        // print the routing table
+        Printing.PrintRoutingTable(port, routingTable);
+
+        // listen for incoming updates
+        new Thread(new UdpListener()).start();
+
+        // start broadcast if we're last
+        if (isLast) {
+            Broadcast();
+        }
+    }
+
+    private void HandleReceived(Packet payload) {
+
+        // print that we received
+        Printing.PrintRcvMessage(payload.DestPort, payload.SourcePort);
+
+        // if we're receiving a message from a non-neighbor, ignore it
+        // note, this should never happen, just a safety check
+        if (!neighbors.containsKey(payload.SourcePort)) {
+            System.out.println("THIS SHOULD NOT HAPPEN!"); // TODO remove
+            return;
+        }
+
+        HashMap<Integer, RoutingTableEntry> neighborRoutingTable = new HashMap<Integer, RoutingTableEntry>();
+
+        // parse the message into the neighbors routing table
+        try {
+            for (String entryString : payload.Data.split(" ")) {
+                String[] entryParts = entryString.split(",");
+
+                int toPort = Integer.parseInt(entryParts[0]);
+                int neighborPort = Integer.parseInt(entryParts[1]);
+                double roundedWeight = Double.parseDouble(entryParts[2]);
+
+                neighborRoutingTable.put(toPort, new RoutingTableEntry(toPort, neighborPort, roundedWeight));
+            }
+        }
+        catch (Exception e) {
+            // received an improperly formatted message, which should never happen - just ignore it
+            return;
+        }
+
+        // update the neighbors routing table
+        neighbors.get(payload.SourcePort).Routes = neighborRoutingTable;
+
+        // update routing table - if it changed print and broadcast
+        if (EnsureRoutingTableIsUpdated()) {
+            Printing.PrintRoutingTable(port, routingTable);
+            Broadcast();
+        }
+        else if (!sentBroadcast) { // we need to broadcast at least once or DV initialization fails
+            Broadcast();
+        }
+    }
+
+    private double RoundWeight(double weight) {
+        return (double)Math.round(weight * 1000)/1000;
+    }
+
+    // updates routing table based on neighbor info, returns true if table changed
+    private boolean EnsureRoutingTableIsUpdated() {
+
+        HashMap<Integer, RoutingTableEntry> newRoutingTable = new HashMap<Integer, RoutingTableEntry>();
+
+        // initialize routing table with direct neighbor links
+        for (Neighbor neighbor : neighbors.values()) {
+            RoutingTableEntry entry = new RoutingTableEntry(neighbor.Port, neighbor.Port, neighbor.Weight);
+            newRoutingTable.put(entry.ToPort, entry);
+        }
+
+        // examine each neighbors routes and update ours accordingly
+        for (Neighbor neighbor : neighbors.values()) {
+            for (RoutingTableEntry neighborEntry : neighbor.Routes.values()) {
+                RoutingTableEntry newEntry = new RoutingTableEntry(neighborEntry.ToPort, neighbor.Port, neighborEntry.Weight + neighbor.Weight);
+
+                // if we don't have this route yet, add it
+                if (!newRoutingTable.containsKey(newEntry.ToPort)) {
+                    newRoutingTable.put(newEntry.ToPort, newEntry);
+                }
+                else { // otherwise only add it if it's better
+                    RoutingTableEntry existingEntry = newRoutingTable.get(neighborEntry.ToPort);
+                    if (newEntry.Weight < existingEntry.Weight) {
+                        newRoutingTable.put(newEntry.ToPort, newEntry);
+                    }
+                }
+            }
+        }
+
+        // see if there are any differences between our new and old routing table
+        boolean updated = false;
+        for (RoutingTableEntry newEntry : newRoutingTable.values()) {
+            if (!routingTable.containsKey(newEntry.ToPort)) {
+                updated = true;
+                break;
+            }
+            RoutingTableEntry existingEntry = routingTable.get(newEntry.ToPort);
+            if (existingEntry.NeighborPort != newEntry.NeighborPort || existingEntry.Weight != newEntry.Weight) {
+                updated = true;
+                break;
+            }
+        }
+
+        routingTable = newRoutingTable;
+        return updated;
+    }
+
+    private String ConstructMessageForNeighbor(int neighborPort) {
+
+        // I am defining the broadcast message as follows:
+        // <reachable-node1>,<next-node1>,<weight1> <reachable-node2>,<next-node2>,<weight2> ...
+
+        String message = "";
+        for (RoutingTableEntry entry : routingTable.values()) {
+            // only tell neighbor we can get to places that don't go through them
+            if (entry.NeighborPort != neighborPort && entry.ToPort != neighborPort){
+                message += entry.ToPort + "," + entry.NeighborPort + "," + entry.Weight + " ";
+            }
+        }
+        return message;
+    }
+
+    private void Broadcast() {
+        for (int neighborPort : neighbors.keySet()) {
+
+            String message = ConstructMessageForNeighbor(neighborPort);
+
+            try {
+                UnreliableSend(neighborPort, message);
+            }
+            catch (Exception e) {
+                // swallow this, assignment says no packets will be dropped in this part
+            }
+
+            // print that we sent it
+            Printing.PrintSendMessage(port, neighborPort);
+        }
+
+        // mark that we have sent at least 1 broadcast
+        sentBroadcast = true;
+    }
+
+    private static class Printing {
+
+        public static void PrintSendMessage(int sourceNodePort, int destNodePort) {
+            long timestamp = Calendar.getInstance().getTimeInMillis();
+            String toPrint = timestamp + " Message sent from Node " + sourceNodePort + " to Node " + destNodePort;
+            System.out.println(toPrint);
+        }
+
+        public static void PrintRcvMessage(int destNodePort, int sourceNodePort) {
+            long timestamp = Calendar.getInstance().getTimeInMillis();
+            String toPrint = timestamp + " Message received at Node " + destNodePort + " from Node " + sourceNodePort;
+            System.out.println(toPrint);
+        }
+
+        public static void PrintRoutingTable(int nodePort, HashMap<Integer, RoutingTableEntry> routingTable) {
+            long timestamp = Calendar.getInstance().getTimeInMillis();
+            String toPrint = timestamp + " Node " + nodePort + " - Routing Table";
+            for (RoutingTableEntry entry : routingTable.values()) {
+                if (entry.ToPort == entry.NeighborPort) {
+                    toPrint += "\nNode " + entry.ToPort + " -> (" + entry.Weight + ")";
+                }
+                else {
+                    toPrint += "\nNode " + entry.ToPort + " [next " + entry.NeighborPort + "] -> (" + entry.Weight + ")";
+                }
+            }
+            System.out.println(toPrint);
+        }
+
+    }
+
+    private void UnreliableSend(int toPort, String message) throws IOException {
         // all communication is on the same machine, so use local host
         InetAddress receiverAddress = InetAddress.getLocalHost();
         byte[] buffer = message.getBytes();
-        DatagramPacket packet = new DatagramPacket(buffer, buffer.length, receiverAddress, toPort);
-        senderSocket.send(packet);
+        DatagramPacket datagram = new DatagramPacket(buffer, buffer.length, receiverAddress, toPort);
+        socket.send(datagram);
     }
 
-    public static String UnreliableReceive(DatagramSocket receiverSocket) throws IOException {
+    private Packet UnreliableReceive() throws IOException {
         byte[] buffer = new byte[1024];
-        DatagramPacket receiverPacket = new DatagramPacket(buffer, buffer.length);
-        receiverSocket.receive(receiverPacket);
-        String fromIP = receiverPacket.getAddress().getHostAddress();
-        int fromPort = receiverPacket.getPort();
-        // TODO return port
-        String msg = new String(buffer, 0, receiverPacket.getLength()).trim();
-        return msg;
+        DatagramPacket receivedDatagram = new DatagramPacket(buffer, buffer.length);
+        socket.receive(receivedDatagram);
+        int fromPort = receivedDatagram.getPort();
+        String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
+        return new Packet(msg, fromPort, port);
     }
 
 }
