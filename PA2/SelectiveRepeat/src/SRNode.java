@@ -48,8 +48,8 @@ public class SRNode {
 
         this.sendNextSeqNum = 0;
         this.sendWindowBase = 0;
-        this.ackedPackets = new HashMap<Integer, Packet>();
-        this.dataToSend = new ArrayList<Packet>();
+        this.ackedPackets = new HashSet<Integer>();
+        this.queuedPackets = new ArrayList<Packet>();
 
         this.rcvWindowBase = 0;
         this.rcvdPackets = new HashMap<Integer, Packet>();
@@ -64,8 +64,8 @@ public class SRNode {
 
     private int sendNextSeqNum;
     private int sendWindowBase;
-    private HashMap<Integer, Packet> ackedPackets;
-    private List<Packet> dataToSend;
+    private HashSet<Integer> ackedPackets;
+    private List<Packet> queuedPackets;
 
     private int rcvWindowBase;
     private HashMap<Integer, Packet> rcvdPackets;
@@ -165,11 +165,11 @@ public class SRNode {
         }
     }
 
-    private class PacketSender implements Runnable {
+    private class TimeoutListener implements Runnable {
 
         private Packet payload;
 
-        public PacketSender(Packet payload) {
+        public TimeoutListener(Packet payload) {
             this.payload = payload;
         }
 
@@ -177,12 +177,6 @@ public class SRNode {
         public void run() {
             // loop forever until packet is ACKed
             while (true) {
-
-                // send it unreliably
-                UnreliableSend(destPort, payload.toString());
-
-                // print that we sent it
-                SenderPrinting.PrintSendPacket(payload.Number, payload.Data);
 
                 // sleep for the timeout
                 try {
@@ -192,12 +186,16 @@ public class SRNode {
                 }
 
                 // if it's been ACKed, we're done, otherwise print timeout
-                if (ackedPackets.containsKey(payload.Number)) {
+                if (ackedPackets.contains(payload.Number)) {
                     break;
                 }
                 else {
                     SenderPrinting.PrintTimeout(payload.Number);
                 }
+
+                // send it unreliably
+                UnreliableSend(destPort, payload.toString());
+                SenderPrinting.PrintSendPacket(payload.Number, payload.Data);
             }
         }
     }
@@ -303,7 +301,7 @@ public class SRNode {
 
     private void HandleReceivedAck(int packetNum) {
 
-        if (ackedPackets.containsKey(packetNum) || packetNum < sendWindowBase || packetNum >= sendWindowBase + windowSize) {
+        if (ackedPackets.contains(packetNum) || packetNum < sendWindowBase || packetNum >= sendWindowBase + windowSize) {
             System.out.println("THIS SHOULD NEVER HAPPEN!");
             // note, we can assume sender/receiver windows are the same so that this will never happen
             // see this post: https://piazza.com/class#spring2013/csee4119/152
@@ -311,13 +309,13 @@ public class SRNode {
         }
 
         // mark the packet as ACKed
-        ackedPackets.put(packetNum, null);
+        ackedPackets.add(packetNum);
 
         // if this is the first packet in the window, shift window and send more packets
         if (sendWindowBase == packetNum) {
 
             // shift the window up to the next unACKed packet
-            while (ackedPackets.containsKey(sendWindowBase)) {
+            while (ackedPackets.contains(sendWindowBase)) {
                 sendWindowBase++;
             }
 
@@ -325,9 +323,9 @@ public class SRNode {
             SenderPrinting.PrintAck2(packetNum, sendWindowBase, sendWindowBase + windowSize);
 
             // send all pending packets that are inside the new window
-            while (!dataToSend.isEmpty() && dataToSend.get(0).Number < sendWindowBase + windowSize) {
-                Packet nextPacketToSend = dataToSend.remove(0);
-                SendPacketOnNewThread(nextPacketToSend);
+            while (!queuedPackets.isEmpty() && queuedPackets.get(0).Number < sendWindowBase + windowSize) {
+                Packet nextPacketToSend = queuedPackets.remove(0);
+                SendPacket(nextPacketToSend);
             }
         }
         else {
@@ -340,58 +338,41 @@ public class SRNode {
     private void HandleReceived(Packet payload) {
 
         if (payload.Number >= rcvWindowBase + windowSize) {
-            System.out.println("THIS SHOULD NEVER HAPPEN!");
-            // note, we can assume sender/receiver windows are the same so that this will never happen
+            // this should never happen because we can assume sender/receiver windows are the same
             // see this post: https://piazza.com/class#spring2013/csee4119/152
             return;
         }
 
-        // if the packet is before our window, discard and resend ACK
-        if (payload.Number < rcvWindowBase) {
+        // if the packet is before our window or we've received it, discard it
+        if (payload.Number < rcvWindowBase || rcvdPackets.containsKey(payload.Number)) {
             ReceiverPrinting.PrintDiscardPacket(payload.Number, payload.Data);
-            SendAck(payload.Number, payload.SourcePort);
-            return;
-        }
-
-        // if we have already received the packet, discard and resend ACK
-        if (rcvdPackets.containsKey(payload.Number)) {
-            ReceiverPrinting.PrintDiscardPacket(payload.Number, payload.Data);
-            SendAck(payload.Number, payload.SourcePort);
-            return;
-        }
-
-        // mark the packet received
-        rcvdPackets.put(payload.Number, payload);
-
-        // if this is the first packet in our window, shift window and deliver data (in theory)
-        if (payload.Number == rcvWindowBase) {
-
-            // shift the window up to the next packet we need
-            while (rcvdPackets.containsKey(rcvWindowBase)) {
-                System.out.println("DELIVER DATA: " + rcvdPackets.get(rcvWindowBase).Data); // TODO remove this
-                rcvWindowBase++;
-            }
-
-            // print Receive2
-            ReceiverPrinting.PrintReceive2(payload.Number, payload.Data, rcvWindowBase, rcvWindowBase + windowSize);
         }
         else {
-            // just print Receive1, don't shift window or deliver data
-            ReceiverPrinting.PrintReceive1(payload.Number, payload.Data);
+            // mark the packet received
+            rcvdPackets.put(payload.Number, payload);
+
+            // if this is the first packet in our window, shift window and deliver data (in theory)
+            if (payload.Number == rcvWindowBase) {
+
+                // shift the window up to the next packet we need
+                while (rcvdPackets.containsKey(rcvWindowBase)) {
+                    System.out.println("DELIVER DATA: " + rcvdPackets.get(rcvWindowBase).Data); // TODO remove this
+                    rcvWindowBase++;
+                }
+
+                // print Receive2
+                ReceiverPrinting.PrintReceive2(payload.Number, payload.Data, rcvWindowBase, rcvWindowBase + windowSize);
+            }
+            else {
+                // just print Receive1, don't shift window or deliver data
+                ReceiverPrinting.PrintReceive1(payload.Number, payload.Data);
+            }
         }
 
-        // send an ACK
-        SendAck(payload.Number, payload.SourcePort);
+        // send an ACK no matter what
+        UnreliableSend(payload.SourcePort, "ACK," + payload.Number);
+        ReceiverPrinting.PrintSendAck(payload.Number);
 
-    }
-
-    private void SendAck(int packetNum, int toPort) {
-
-        // print that we're sending an ACK
-        ReceiverPrinting.PrintSendAck(packetNum);
-
-        // send it unreliably
-        UnreliableSend(toPort, "ACK," + packetNum);
     }
 
     private void SendMessage(final String message) {
@@ -403,10 +384,10 @@ public class SRNode {
 
             // if the window is full, save it for later
             if (sendNextSeqNum >= sendWindowBase + windowSize) {
-                dataToSend.add(payload);
+                queuedPackets.add(payload);
             }
             else {
-                SendPacketOnNewThread(payload);
+                SendPacket(payload);
             }
 
             // increment sequence number
@@ -414,12 +395,10 @@ public class SRNode {
         }
     }
 
-    private void SendPacketOnNewThread(final Packet payload) {
-        new Thread(new PacketSender(payload)).start();
-        try {
-            Thread.sleep(2); // sleep really quickly to force window packets to be in order
-        }
-        catch (Exception e){}
+    private void SendPacket(final Packet payload) {
+        SenderPrinting.PrintSendPacket(payload.Number, payload.Data);
+        UnreliableSend(payload.DestPort, payload.toString());
+        new Thread(new TimeoutListener(payload)).start();
     }
 
 }
