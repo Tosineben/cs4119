@@ -89,6 +89,10 @@ public class SDNode {
     }
 
     public void Initialize(boolean isLast) {
+
+        // initialize SRNode, which begins listening for incoming requests
+        selectiveRepeat.Initialize();
+
         // set up the routing table
         EnsureRoutingTableIsUpdated();
 
@@ -102,26 +106,6 @@ public class SDNode {
 
         // listen for user input on another thread
         new Thread(new UserListener()).start();
-
-        // tell SRNode to listen for incoming updates
-        selectiveRepeat.ListenForUpdates();
-    }
-
-    private void ChangeCommand(HashMap<Integer, Double> updatedNeighbors) {
-        // ignore changes to non-neighbors
-
-        //Once a node is informed changes on the link, it ﬁrst send an link
-        // update packet (contain the new link weight)
-        //to all neighbours who shares the link. When its neighbours
-        // receive these packets, they update the link weights
-        //and send ACK back to the node.
-        // When the node receives all ACK from neighbours that update
-        // the link weight, it start DV of the system if its routing table changes.
-
-    }
-
-    private void SendCommand(int destPort, int numPackets) {
-
     }
 
     private class UserListener implements Runnable {
@@ -169,7 +153,7 @@ public class SDNode {
 
             try {
                 // count args by two's, getting info for each neighbor
-                for (int i = 1; i < msgParts.length - 1; i += 2) {
+                for (int i = 0; i < msgParts.length; i += 2) {
                     int nPort = Integer.parseInt(msgParts[i]);
                     double nLossRate = Double.parseDouble(msgParts[i + 1]);
 
@@ -210,16 +194,87 @@ public class SDNode {
 
     }
 
-    private void HandleUpdate(int fromPort, String message) {
+    private void ChangeCommand(HashMap<Integer, Double> updatedNeighbors) {
 
-        // print that we received
-        DvPrinting.PrintRcvMessage(port, fromPort);
+        for (int nPort : updatedNeighbors.keySet()){
+
+            // ignore updates to non-neighbors
+            if (!neighbors.containsKey(nPort)){
+                continue;
+            }
+
+            double newLossRate = updatedNeighbors.get(nPort);
+
+            // update our neighbor information
+            Neighbor updatedNeighbor = new Neighbor(nPort, newLossRate);
+            neighbors.put(nPort, updatedNeighbor);
+
+            // inform neighbor of the new loss rate
+            // NOTE: i am defining this message to be of the form 'CHANGE_<new-loss-rate>'
+            selectiveRepeat.SendMessage(nPort, "CHANGE_" + updatedNeighbor.LossRate);
+        }
+
+        // now all neighbors have been informed of new loss rate, so we kickoff our DV
+        if (EnsureRoutingTableIsUpdated()) {
+            DvPrinting.PrintRoutingTable(port, routingTable);
+            Broadcast();
+        }
+    }
+
+    private void SendCommand(int destPort, int numPackets) {
+
+        // mark the start time
+
+        selectiveRepeat.SendRandomPackets(destPort, numPackets);
+
+        // wait
+    }
+
+    private void DeliverMessage(int fromPort, String message){
 
         // if we're receiving a message from a non-neighbor, ignore it
         // note, this should never happen, just a safety check
         if (!neighbors.containsKey(fromPort)) {
             return;
         }
+
+        String[] msgParts = message.split("_");
+        String command = msgParts[0];
+        String realMessage = msgParts[1];
+        if ("CHANGE".equals(command)) {
+            HandleChangeUpdate(fromPort, realMessage);
+        }
+        else if ("DV".equals(command)) {
+            HandleDvUpdate(fromPort, realMessage);
+        }
+
+        // ignore any other commands
+    }
+
+    private void HandleChangeUpdate(int fromPort, String message) {
+        double newLossRate;
+        try {
+            newLossRate = Double.parseDouble(message);
+        }
+        catch (Exception e){
+            return; // bad change message, just ignore it
+        }
+
+        // update the link
+        Neighbor updatedNeighbor = new Neighbor(fromPort, newLossRate);
+        neighbors.put(fromPort, updatedNeighbor);
+
+        // update the routing table and broadcast if necessary
+        if (EnsureRoutingTableIsUpdated()) {
+            DvPrinting.PrintRoutingTable(port, routingTable);
+            Broadcast();
+        }
+    }
+
+    private void HandleDvUpdate(int fromPort, String message) {
+
+        // print that we received an update
+        DvPrinting.PrintRcvMessage(port, fromPort);
 
         HashMap<Integer, RoutingTableEntry> neighborRoutingTable = new HashMap<Integer, RoutingTableEntry>();
 
@@ -303,9 +358,9 @@ public class SDNode {
     private String ConstructMessageForNeighbor(int neighborPort) {
 
         // I am defining the broadcast message as follows:
-        // <reachable-node1>,<next-node1>,<weight1> <reachable-node2>,<next-node2>,<weight2> ...
+        // DV_<reachable-node1>,<next-node1>,<weight1> <reachable-node2>,<next-node2>,<weight2> ...
 
-        String message = "";
+        String message = "DV_";
         for (RoutingTableEntry entry : routingTable.values()) {
             // only tell neighbor we can get to places that don't go through them
             if (entry.NeighborPort != neighborPort && entry.ToPort != neighborPort){
@@ -331,7 +386,7 @@ public class SDNode {
 
     // this is NOT exactly the same as SRNode from part 1
     // it is similar, but tweaks have been made to fit needs of SDNode
-    public class SRNode {
+    private class SRNode {
 
         public SRNode(int sourcePort, int windowSize, int timeoutMs) throws IllegalArgumentException, SocketException {
             this.sourcePort = sourcePort;
@@ -362,46 +417,54 @@ public class SDNode {
         private int rcvWindowBase;
         private HashMap<Integer, Packet> rcvdPackets;
 
-        public void ListenForUpdates() {
-            // receive UDP messages forever
-            while (true) {
+        public void Initialize() {
+            // listen for incoming messages on a new thread
+            new Thread(new UdpListener()).start();
+        }
 
-                byte[] buffer = new byte[1024];
-                DatagramPacket receivedDatagram = new DatagramPacket(buffer, buffer.length);
+        private class UdpListener implements Runnable {
+            @Override
+            public void run() {
+                // receive UDP messages forever
+                while (true) {
 
-                try {
-                    socket.receive(receivedDatagram);
-                }
-                catch (IOException e) {
-                    continue; // just swallow this, received a weird packet
-                }
+                    byte[] buffer = new byte[1024];
+                    DatagramPacket receivedDatagram = new DatagramPacket(buffer, buffer.length);
 
-                int fromPort = receivedDatagram.getPort();
-                String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
-
-                // if we don't recognize the port, skip it
-                if (!neighbors.containsKey(fromPort)){
-                    continue;
-                }
-
-                // simulate packet loss, done by receiver based on https://piazza.com/class#spring2013/csee4119/155
-                if (new Random().nextDouble() < neighbors.get(fromPort).LossRate) {
-                    continue;
-                }
-
-                if (msg.startsWith("ACK")) {
-                    int packetNum;
                     try {
-                        packetNum = Integer.parseInt(msg.split(",")[1]);
+                        socket.receive(receivedDatagram);
                     }
-                    catch (Exception e) {
-                        continue; // this should never happen, invalid ACK message
+                    catch (IOException e) {
+                        continue; // just swallow this, received a weird packet
                     }
-                    HandleReceivedAck(packetNum);
-                }
-                else {
-                    Packet p = new Packet(msg, fromPort, sourcePort);
-                    HandleReceived(p);
+
+                    int fromPort = receivedDatagram.getPort();
+                    String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
+
+                    // if we don't recognize the port, skip it
+                    if (!neighbors.containsKey(fromPort)){
+                        continue;
+                    }
+
+                    // simulate packet loss, done by receiver based on https://piazza.com/class#spring2013/csee4119/155
+                    if (new Random().nextDouble() < neighbors.get(fromPort).LossRate) {
+                        continue;
+                    }
+
+                    if (msg.startsWith("ACK")) {
+                        int packetNum;
+                        try {
+                            packetNum = Integer.parseInt(msg.split(",")[1]);
+                        }
+                        catch (Exception e) {
+                            continue; // this should never happen, invalid ACK message
+                        }
+                        HandleReceivedAck(packetNum);
+                    }
+                    else {
+                        Packet p = new Packet(msg, fromPort, sourcePort);
+                        HandleReceived(p);
+                    }
                 }
             }
         }
@@ -539,7 +602,7 @@ public class SDNode {
                     // deliver data and shift the window up to the next packet we need
                     while (rcvdPackets.containsKey(rcvWindowBase)) {
                         Packet toDeliver = rcvdPackets.get(rcvWindowBase);
-                        HandleUpdate(toDeliver.SourcePort, toDeliver.Data);
+                        DeliverMessage(toDeliver.SourcePort, toDeliver.Data);
                         rcvWindowBase++;
                     }
 
@@ -558,6 +621,25 @@ public class SDNode {
 
         }
 
+        public void SendRandomPackets(final int destPort, final int numPackets) {
+            for (int i = 0; i < numPackets; i++) {
+                Packet payload = new Packet("PACKETS_", sendNextSeqNum, sourcePort, destPort);
+
+                // if the window is full, save it for later
+                if (sendNextSeqNum >= sendWindowBase + windowSize) {
+                    queuedPackets.add(payload);
+                }
+                else {
+                    SendPacket(payload);
+                }
+
+                // increment sequence number
+                sendNextSeqNum++;
+            }
+
+            // TODO wait for all ACKs to come in...
+        }
+
         public void SendMessage(final int destPort, final String message) {
             Packet payload = new Packet(message, sendNextSeqNum, sourcePort, destPort);
 
@@ -571,6 +653,9 @@ public class SDNode {
 
             // increment sequence number
             sendNextSeqNum++;
+
+            // wait for all packets to be ACKed
+            while (!ackedPackets.contains(payload.Number)){}
         }
 
         private void SendPacket(final Packet payload) {
