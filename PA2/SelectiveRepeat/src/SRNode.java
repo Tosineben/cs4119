@@ -86,7 +86,7 @@ public class SRNode {
             while (true) {
                 String message = GetMessageFromUser();
                 if (message == null) {
-                    System.err.println("Oops, I don't recognize that command, try again.");
+                    UnrecognizedInput();
                     continue;
                 }
                 SendMessage(message);
@@ -122,6 +122,10 @@ public class SRNode {
             }
 
             return message;
+        }
+
+        private void UnrecognizedInput(){
+            System.err.println("Oops, I don't recognize that command, try again.");
         }
 
     }
@@ -302,7 +306,6 @@ public class SRNode {
     private void HandleReceivedAck(int packetNum) {
 
         if (ackedPackets.contains(packetNum) || packetNum < sendWindowBase || packetNum >= sendWindowBase + windowSize) {
-            System.out.println("THIS SHOULD NEVER HAPPEN!");
             // note, we can assume sender/receiver windows are the same so that this will never happen
             // see this post: https://piazza.com/class#spring2013/csee4119/152
             return;
