@@ -218,6 +218,12 @@ public class SDNode {
                 return;
             }
 
+            System.out.println("Doing change command");
+
+            for (int key : updatedNeighbors.keySet()) {
+                System.out.println("Neighbor " + key + " changed to " + updatedNeighbors.get(key));
+            }
+
             DoChangeCommand(updatedNeighbors);
         }
 
@@ -321,6 +327,8 @@ public class SDNode {
 
     // GOOD TO GO
     private void MessageDeliveryFromSR(int fromPort, String message, int numDroppedSinceLastDelivery){
+
+        System.out.println("MESSAGE DELIVERY. " + fromPort + " says " + message);
 
         String[] msgParts = message.split(PREFIX_DELIM);
         String prefix = msgParts[0];
@@ -633,10 +641,10 @@ public class SDNode {
                     }
 
                     // simulate packet loss, done by receiver based on https://piazza.com/class#spring2013/csee4119/155
-                    if (new Random().nextDouble() < neighbors.get(fromPort).LossRate) {
-                        numDroppedSinceLastDeliver++; // keep track of how many we drop
-                        continue;
-                    }
+//                    if (new Random().nextDouble() < neighbors.get(fromPort).LossRate) {
+ //                       numDroppedSinceLastDeliver++; // keep track of how many we drop
+  //                      continue;
+   //                 }
 
                     // all packets start with packet number except special ACK packets
                     if (msg.startsWith("ACK")) {
@@ -654,6 +662,23 @@ public class SDNode {
                         HandleReceived(p);
                     }
                 }
+            }
+        }
+
+        private class MessageDelivery implements Runnable {
+
+            private int sourcePort;
+            private String data;
+
+            public MessageDelivery(int sourcePort, String data) {
+                this.sourcePort = sourcePort;
+                this.data = data;
+            }
+
+            @Override
+            public void run() {
+                MessageDeliveryFromSR(sourcePort, data, numDroppedSinceLastDeliver);
+                numDroppedSinceLastDeliver = 0;
             }
         }
 
@@ -728,6 +753,7 @@ public class SDNode {
             if (payload.Number >= rcvWindowBase + windowSize) {
                 // this should never happen because we can assume sender/receiver windows are the same
                 // see this post: https://piazza.com/class#spring2013/csee4119/152
+                System.out.println("wtf case"); // TODO remove
                 return;
             }
 
@@ -744,10 +770,11 @@ public class SDNode {
 
                     // deliver data and shift the window up to the next packet we need
                     while (rcvdPackets.containsKey(rcvWindowBase)) {
-                        Packet toDeliver = rcvdPackets.get(rcvWindowBase);
-                        MessageDeliveryFromSR(toDeliver.SourcePort, toDeliver.Data, numDroppedSinceLastDeliver);
+                        Packet toDeliver = rcvdPackets.get(rcvWindowBase); // TODO should this be remove?
                         rcvWindowBase++;
-                        numDroppedSinceLastDeliver = 0; // reset this now that we delivered
+
+                        // deliver data and keep processing
+                        new Thread(new MessageDelivery(toDeliver.SourcePort, toDeliver.Data)).start();
                     }
 
                     // print Receive2
@@ -833,7 +860,7 @@ public class SDNode {
                     }
 
                     // check for timeout
-                    if (inFlightPacketTimes.get(packetNum) + timeoutMs > Calendar.getInstance().getTimeInMillis()) {
+                    if (inFlightPacketTimes.get(packetNum) + timeoutMs < Calendar.getInstance().getTimeInMillis()) {
                         SrSenderPrinting.PrintTimeout(packetNum);
                         SendOnePacket(sendPackets.get(packetNum));
                     }
@@ -850,9 +877,9 @@ public class SDNode {
 
         // GOOD TO GO
         private void SendOnePacket(final Packet payload) {
-            SrSenderPrinting.PrintSendPacket(payload.Number, payload.Data);
             inFlightPacketTimes.put(payload.Number, Calendar.getInstance().getTimeInMillis());
             UnreliableSend(payload.DestPort, payload.toString());
+            SrSenderPrinting.PrintSendPacket(payload.Number, payload.Data);
         }
 
         // GOOD TO GO
