@@ -34,7 +34,7 @@ public class SRNode {
 
     public SRNode(int sourcePort, int destPort, int windowSize, int timeoutMs, double lossRate) throws IllegalArgumentException, SocketException {
 
-        if (lossRate < 0 || lossRate > 1 || sourcePort <= 0 || destPort <= 0 || windowSize <= 0 || timeoutMs <= 0) {
+        if (lossRate < 0 || sourcePort <= 0 || destPort <= 0 || windowSize <= 0 || timeoutMs <= 0) {
             throw new IllegalArgumentException("Arguments outside valid range.");
         }
 

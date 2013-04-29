@@ -138,9 +138,9 @@ public class DVNode {
 
                 int toPort = Integer.parseInt(entryParts[0]);
                 int neighborPort = Integer.parseInt(entryParts[1]);
-                double roundedWeight = Double.parseDouble(entryParts[2]);
+                double weight = Double.parseDouble(entryParts[2]);
 
-                neighborRoutingTable.put(toPort, new RoutingTableEntry(toPort, neighborPort, roundedWeight));
+                neighborRoutingTable.put(toPort, new RoutingTableEntry(toPort, neighborPort, weight));
             }
         }
         catch (Exception e) {
