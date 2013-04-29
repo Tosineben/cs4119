@@ -377,8 +377,9 @@ public class SDNode {
         // 3. if yes, send final timestamp back to original source port via routing table
         // 4. if no, start sending according to routing table
 
-        // print out statistics
+        // print out statistics then clear them
         SdPrinting.PrintFinishReceiving(fromPort, stat.GetTotalPackets(), stat.GetLossRate());
+        sendStatistics.remove(message);
 
         if (finalDestPort == sourcePort) {
             // I am defining the end-of-send message as follows:
@@ -392,7 +393,7 @@ public class SDNode {
         else {
             // forward message using routing table
             int neighborPort = routingTable.get(finalDestPort).NeighborPort;
-            neighbors.get(neighborPort).SrNode.SendRandomPackets(numPackets, message);
+            neighbors.get(neighborPort).SrNode.SendRandomPackets(numPackets, SEND_PREFIX + PREFIX_DELIM + message);
         }
 
     }
@@ -431,7 +432,7 @@ public class SDNode {
         else {
             // not for me, so just forward it along
             int neighborPort = routingTable.get(originalSourcePort).NeighborPort;
-            neighbors.get(neighborPort).SrNode.SendMessage(message);
+            neighbors.get(neighborPort).SrNode.SendMessage(END_OF_SEND_PREFIX + PREFIX_DELIM + message);
         }
 
     }
@@ -717,15 +718,15 @@ public class SDNode {
         private int rcvWindowBase;
         private HashMap<Integer, Packet> rcvdPackets = new HashMap<Integer, Packet>();
 
+        private Object lock = new Object();
+
         private class MessageDelivery implements Runnable {
 
-            private int sourcePort;
-            private String data;
             private int numDropped;
+            private List<Packet> toDeliver;
 
-            public MessageDelivery(int sourcePort, String data) {
-                this.sourcePort = sourcePort;
-                this.data = data;
+            public MessageDelivery(List<Packet> toDeliver) {
+                this.toDeliver = toDeliver;
                 this.numDropped = numDroppedSinceLastDeliver;
                 numDroppedSinceLastDeliver = 0;
             }
@@ -738,44 +739,50 @@ public class SDNode {
                 catch (Exception e) {
                     // swallow
                 }
-                MessageDeliveryFromSR(sourcePort, data, numDropped);
+
+                for (Packet p : toDeliver) {
+                    MessageDeliveryFromSR(p.SourcePort, p.Data, numDropped);
+                    numDropped = 0;
+                }
             }
         }
 
         // GOOD TO GO
         public void HandleReceivedAck(int packetNum) {
+            synchronized (lock) {
 
-            if (ackedPackets.contains(packetNum) || packetNum < sendWindowBase || packetNum >= sendWindowBase + windowSize) {
-                // note, we can assume sender/receiver windows are the same so that this will never happen
-                // see this post: https://piazza.com/class#spring2013/csee4119/152
-                return;
-            }
-
-            // mark the packet as ACKed
-            ackedPackets.add(packetNum);
-
-            // if this is the first packet in the window, shift window and send more packets
-            if (sendWindowBase == packetNum) {
-
-                // shift the window up to the next unACKed packet
-                while (ackedPackets.contains(sendWindowBase)) {
-                    sendWindowBase++;
+                if (ackedPackets.contains(packetNum) || packetNum < sendWindowBase || packetNum >= sendWindowBase + windowSize) {
+                    // note, we can assume sender/receiver windows are the same so that this will never happen
+                    // see this post: https://piazza.com/class#spring2013/csee4119/152
+                    return;
                 }
 
-                // print the ACK2
-                SrSenderPrinting.PrintAck2(packetNum, sendWindowBase, sendWindowBase + windowSize);
+                // mark the packet as ACKed
+                ackedPackets.add(packetNum);
 
-                // send all pending packets that are inside the new window
-                while (!queuedPackets.isEmpty() && queuedPackets.get(0) < sendWindowBase + windowSize) {
-                    int nextPacketToSend = queuedPackets.remove(0);
-                    SendOnePacket(sendPackets.get(nextPacketToSend));
+                // if this is the first packet in the window, shift window and send more packets
+                if (sendWindowBase == packetNum) {
+
+                    // shift the window up to the next unACKed packet
+                    while (ackedPackets.contains(sendWindowBase)) {
+                        sendWindowBase++;
+                    }
+
+                    // print the ACK2
+                    SrSenderPrinting.PrintAck2(packetNum, sendWindowBase, sendWindowBase + windowSize);
+
+                    // send all pending packets that are inside the new window
+                    while (!queuedPackets.isEmpty() && queuedPackets.get(0) < sendWindowBase + windowSize) {
+                        int nextPacketToSend = queuedPackets.remove(0);
+                        SendOnePacket(sendPackets.get(nextPacketToSend));
+                    }
                 }
-            }
-            else {
-                // just print ACK1, don't move window or send anything new
-                SrSenderPrinting.PrintAck1(packetNum);
-            }
+                else {
+                    // just print ACK1, don't move window or send anything new
+                    SrSenderPrinting.PrintAck1(packetNum);
+                }
 
+            }
         }
 
         // GOOD TO GO
@@ -799,14 +806,13 @@ public class SDNode {
                 if (payload.Number == rcvWindowBase) {
 
                     // deliver data and shift the window up to the next packet we need
+                    List<Packet> toDeliver = new ArrayList<Packet>();
                     while (rcvdPackets.containsKey(rcvWindowBase)) {
-                        Packet toDeliver = rcvdPackets.get(rcvWindowBase); // TODO should this be remove instead of get?
+                        toDeliver.add(rcvdPackets.get(rcvWindowBase)); // TODO should this be remove instead of get?
                         rcvWindowBase++;
-
-                        // deliver data and keep processing
-                        new Thread(new MessageDelivery(toDeliver.SourcePort, toDeliver.Data)).start();
-                        //new MessageDelivery(toDeliver.SourcePort, toDeliver.Data).run();
                     }
+                    // deliver data and keep processing
+                    new Thread(new MessageDelivery(toDeliver)).start();
 
                     // print Receive2
                     SrReceiverPrinting.PrintReceive2(payload.Number, payload.Data, rcvWindowBase, rcvWindowBase + windowSize);
@@ -854,17 +860,21 @@ public class SDNode {
             // print that we're starting
             SdPrinting.PrintStartSending(sourcePort);
 
-            // send or queue all of the packets
-            for (Packet payload : packets) {
-                sendPackets.put(payload.Number, payload);
+            synchronized (lock) {
 
-                // if the window is full, save it for later
-                if (payload.Number >= sendWindowBase + windowSize) {
-                    queuedPackets.add(payload.Number);
+                // send or queue all of the packets
+                for (Packet payload : packets) {
+                    sendPackets.put(payload.Number, payload);
+
+                    // if the window is full, save it for later
+                    if (payload.Number >= sendWindowBase + windowSize) {
+                        queuedPackets.add(payload.Number);
+                    }
+                    else {
+                        SendOnePacket(payload);
+                    }
                 }
-                else {
-                    SendOnePacket(payload);
-                }
+
             }
 
             // wait for all packets to be ACKed and check for timeouts
@@ -877,24 +887,28 @@ public class SDNode {
                     // if we get aborted, we're screwed
                 }
 
-                // if nothing is in flight, we're done!
-                if (inFlightPacketTimes.isEmpty()) {
-                    break;
-                }
+                synchronized (lock) {
 
-                for (Integer packetNum : inFlightPacketTimes.keySet()) {
-
-                    // if the packet has been ACKed, no longer in flight
-                    if (ackedPackets.contains(packetNum)) {
-                        inFlightPacketTimes.remove(packetNum);
-                        continue;
+                    // if nothing is in flight, we're done!
+                    if (inFlightPacketTimes.isEmpty()) {
+                        break;
                     }
 
-                    // check for timeout
-                    if (inFlightPacketTimes.get(packetNum) + timeoutMs < Calendar.getInstance().getTimeInMillis()) {
-                        SrSenderPrinting.PrintTimeout(packetNum);
-                        SendOnePacket(sendPackets.get(packetNum));
+                    for (Integer packetNum : new ArrayList<Integer>(inFlightPacketTimes.keySet())) {
+
+                        // if the packet has been ACKed, no longer in flight
+                        if (ackedPackets.contains(packetNum)) {
+                            inFlightPacketTimes.remove(packetNum);
+                            continue;
+                        }
+
+                        // check for timeout
+                        if (inFlightPacketTimes.get(packetNum) + timeoutMs < Calendar.getInstance().getTimeInMillis()) {
+                            SrSenderPrinting.PrintTimeout(packetNum);
+                            SendOnePacket(sendPackets.get(packetNum));
+                        }
                     }
+
                 }
 
             }
