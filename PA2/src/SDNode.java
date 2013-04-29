@@ -40,6 +40,7 @@ public class SDNode {
 
     }
 
+    private Object udpLock = new Object();
     private DatagramSocket socket;
     private final int sourcePort;
     private boolean sentBroadcast;
@@ -101,22 +102,19 @@ public class SDNode {
     // statistics to keep track of "send"
     private class SendStat {
 
-        public SendStat(String message, int numReceived, int numDropped) {
+        public SendStat(String message, int numValidReceived, int totalNumReceived) {
             Message = message;
-            NumReceived = numReceived;
-            NumDropped = numDropped;
+            NumValidReceived = numValidReceived;
+            TotalNumReceived = totalNumReceived;
         }
 
         public String Message;
-        public int NumReceived;
-        public int NumDropped;
-
-        public int GetTotalPackets() {
-            return NumReceived + NumDropped;
-        }
+        public int NumValidReceived;
+        public int TotalNumReceived;
 
         public double GetLossRate() {
-            double lossRate = NumDropped / GetTotalPackets();
+            int numDropped = TotalNumReceived - NumValidReceived;
+            double lossRate = (double)numDropped / TotalNumReceived;
             return (double)Math.round(lossRate * 1000)/1000; // round to 3 decimal places
         }
 
@@ -254,7 +252,7 @@ public class SDNode {
     }
 
     // GOOD TO GO
-    private void MessageDeliveryFromSR(int fromPort, String message, int numDroppedSinceLastDelivery){
+    private void MessageDeliveryFromSR(int fromPort, String message, int numReceivedSinceLastDeliver){
 
         System.out.println("MESSAGE DELIVERY. " + fromPort + " says " + message);
 
@@ -269,7 +267,7 @@ public class SDNode {
             HandleDvFromNeighbor(fromPort, realMessage);
         }
         else if (SEND_PREFIX.equals(prefix)) {
-            HandleSendFromNeighbor(fromPort, realMessage, numDroppedSinceLastDelivery);
+            HandleSendFromNeighbor(fromPort, realMessage, numReceivedSinceLastDeliver);
         }
         else if (END_OF_SEND_PREFIX.equals(prefix)) {
             HandleEndOfSendFromNeighbor(realMessage);
@@ -337,7 +335,7 @@ public class SDNode {
     }
 
     // GOOD TO GO
-    private void HandleSendFromNeighbor(int fromPort, String message, int numDroppedSinceLastDelivery) {
+    private void HandleSendFromNeighbor(int fromPort, String message, int numReceivedSinceLastDeliver) {
 
         String[] parts = message.split(",");
         int originalSourcePort;
@@ -355,19 +353,19 @@ public class SDNode {
         }
 
         if (!sendStatistics.containsKey(message)) {
-            SendStat stat = new SendStat(message, 1, numDroppedSinceLastDelivery);
+            SendStat stat = new SendStat(message, 1, numReceivedSinceLastDeliver);
             sendStatistics.put(message, stat);
         }
         else {
             SendStat currentStat = sendStatistics.get(message);
-            currentStat.NumReceived++;
-            currentStat.NumDropped += numDroppedSinceLastDelivery;
+            currentStat.NumValidReceived++;
+            currentStat.TotalNumReceived += numReceivedSinceLastDeliver;
         }
 
         SendStat stat = sendStatistics.get(message);
 
         // if we haven't received all of the packets, nothing to do yet
-        if (stat.NumReceived != numPackets) {
+        if (stat.NumValidReceived != numPackets) {
             return;
         }
 
@@ -378,7 +376,7 @@ public class SDNode {
         // 4. if no, start sending according to routing table
 
         // print out statistics then clear them
-        SdPrinting.PrintFinishReceiving(fromPort, stat.GetTotalPackets(), stat.GetLossRate());
+        SdPrinting.PrintFinishReceiving(fromPort, stat.TotalNumReceived, stat.GetLossRate());
         sendStatistics.remove(message);
 
         if (finalDestPort == sourcePort) {
@@ -636,12 +634,27 @@ public class SDNode {
                 int fromPort = receivedDatagram.getPort();
                 String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
 
+                synchronized (udpLock) {
+                    new Thread(new ReceivedThread(fromPort, msg)).start();
+                    continue;
+                }
+
+                /*
+
                 // ignore messages from non-neighbors
                 if (!neighbors.containsKey(fromPort)){
                     continue;
                 }
 
-                SRNode srNode = neighbors.get(fromPort).SrNode;
+                Neighbor n = neighbors.get(fromPort);
+
+                // mark that we received from neighbor
+                n.SrNode.numReceivedSinceLastDeliver++;
+
+                // receiver simulates "dropped" packets based on neighbor loss rate
+                if (new Random().nextDouble() < n.LossRate) {
+                    continue;
+                }
 
                 // all packets start with packet number except special ACK packets
                 if (msg.startsWith("ACK")) {
@@ -652,12 +665,60 @@ public class SDNode {
                     catch (Exception e) {
                         continue; // this should never happen, invalid ACK message
                     }
-                    srNode.HandleReceivedAck(packetNum);
+                    n.SrNode.HandleReceivedAck(packetNum);
                 }
                 else {
                     Packet p = new Packet(msg, fromPort, sourcePort);
-                    srNode.HandleReceived(p);
+                    n.SrNode.HandleReceived(p);
                 }
+
+                */
+            }
+        }
+    }
+
+    private class ReceivedThread implements Runnable {
+
+        private int fromPort;
+        private String msg;
+
+        public ReceivedThread(int fromPort, String msg) {
+
+            this.fromPort = fromPort;
+            this.msg = msg;
+        }
+
+        @Override
+        public void run() {
+            // ignore messages from non-neighbors
+            if (!neighbors.containsKey(fromPort)){
+                return;
+            }
+
+            Neighbor n = neighbors.get(fromPort);
+
+            // mark that we received from neighbor
+            n.SrNode.numReceivedSinceLastDeliver++;
+
+            // receiver simulates "dropped" packets based on neighbor loss rate
+            if (new Random().nextDouble() < n.LossRate) {
+                return;
+            }
+
+            // all packets start with packet number except special ACK packets
+            if (msg.startsWith("ACK")) {
+                int packetNum;
+                try {
+                    packetNum = Integer.parseInt(msg.split(",")[1]);
+                }
+                catch (Exception e) {
+                    return; // this should never happen, invalid ACK message
+                }
+                n.SrNode.HandleReceivedAck(packetNum);
+            }
+            else {
+                Packet p = new Packet(msg, fromPort, sourcePort);
+                n.SrNode.HandleReceived(p);
             }
         }
     }
@@ -706,7 +767,7 @@ public class SDNode {
         private int destPort;       // send msgs to this port
         private int windowSize;     // length of the ACK window
         private int timeoutMs;      // packet timeout
-        private int numDroppedSinceLastDeliver;
+        private int numReceivedSinceLastDeliver;
 
         private int sendNextSeqNum;
         private int sendWindowBase;
@@ -722,13 +783,13 @@ public class SDNode {
 
         private class MessageDelivery implements Runnable {
 
-            private int numDropped;
+            private int numReceived;
             private List<Packet> toDeliver;
 
             public MessageDelivery(List<Packet> toDeliver) {
                 this.toDeliver = toDeliver;
-                this.numDropped = numDroppedSinceLastDeliver;
-                numDroppedSinceLastDeliver = 0;
+                this.numReceived = numReceivedSinceLastDeliver;
+                numReceivedSinceLastDeliver = 0;
             }
 
             @Override
@@ -741,8 +802,8 @@ public class SDNode {
                 }
 
                 for (Packet p : toDeliver) {
-                    MessageDeliveryFromSR(p.SourcePort, p.Data, numDropped);
-                    numDropped = 0;
+                    MessageDeliveryFromSR(p.SourcePort, p.Data, numReceived);
+                    numReceived = 0;
                 }
             }
         }
@@ -808,11 +869,15 @@ public class SDNode {
                     // deliver data and shift the window up to the next packet we need
                     List<Packet> toDeliver = new ArrayList<Packet>();
                     while (rcvdPackets.containsKey(rcvWindowBase)) {
-                        toDeliver.add(rcvdPackets.get(rcvWindowBase)); // TODO should this be remove instead of get?
+                        Packet p = rcvdPackets.get(rcvWindowBase); // TODO should this be remove instead of get?
+                        MessageDeliveryFromSR(p.SourcePort, p.Data, numReceivedSinceLastDeliver);
+                        numReceivedSinceLastDeliver = 0;
+                        toDeliver.add(p);
                         rcvWindowBase++;
                     }
+
                     // deliver data and keep processing
-                    new Thread(new MessageDelivery(toDeliver)).start();
+                    // new Thread(new MessageDelivery(toDeliver)).start();
 
                     // print Receive2
                     SrReceiverPrinting.PrintReceive2(payload.Number, payload.Data, rcvWindowBase, rcvWindowBase + windowSize);
@@ -860,7 +925,7 @@ public class SDNode {
             // print that we're starting
             SdPrinting.PrintStartSending(sourcePort);
 
-            synchronized (lock) {
+            synchronized (udpLock) {
 
                 // send or queue all of the packets
                 for (Packet payload : packets) {
@@ -887,7 +952,7 @@ public class SDNode {
                     // if we get aborted, we're screwed
                 }
 
-                synchronized (lock) {
+                synchronized (udpLock) {
 
                     // if nothing is in flight, we're done!
                     if (inFlightPacketTimes.isEmpty()) {
