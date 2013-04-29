@@ -40,7 +40,7 @@ public class SDNode {
 
     }
 
-    private UdpListener udpListener;
+    private DatagramSocket socket;
     private final int sourcePort;
     private boolean sentBroadcast;
     private HashMap<Integer, RoutingTableEntry> routingTable = new HashMap<Integer, RoutingTableEntry>();
@@ -52,12 +52,12 @@ public class SDNode {
     public SDNode(int port, HashMap<Integer, Double> neighbors) throws SocketException {
         this.sourcePort = port;
 
+        this.socket = new DatagramSocket(port);
+
         for(Map.Entry<Integer, Double> neighbor : neighbors.entrySet()) {
             Neighbor n = new Neighbor(neighbor.getKey(), neighbor.getValue());
             this.neighbors.put(n.Port, n);
         }
-
-        this.udpListener = new UdpListener(port);
     }
 
     // info we need to store about each neighbor to compute routing table
@@ -68,11 +68,11 @@ public class SDNode {
         public HashMap<Integer, RoutingTableEntry> Routes = new HashMap<Integer, RoutingTableEntry>();
         public SRNode SrNode;
 
-        public Neighbor(int port, double lossRate) throws SocketException {
+        public Neighbor(int port, double lossRate) {
             Port = port;
 
             // defaults from assignment description: windowSize = 10, timeout = 300ms
-            SrNode = new SRNode(sourcePort, port, 10, 300);
+            SrNode = new SRNode(socket, port, 10, 300);
 
             UpdateLossRate(lossRate);
         }
@@ -156,7 +156,7 @@ public class SDNode {
         DvPrinting.PrintRoutingTable(sourcePort, routingTable);
 
         // listen for incoming udp on another thread, do this before broadcast
-        new Thread(udpListener).start();
+        new Thread(new UdpListener(socket)).start();
 
         // start broadcast if we're last
         if (isLast) {
@@ -183,8 +183,14 @@ public class SDNode {
 
             double newLossRate = updatedNeighbors.get(nPort);
 
-            // update our neighbor information
             Neighbor n = neighbors.get(nPort);
+
+            // if loss rate didn't change, don't send update
+            if (n.LossRate == newLossRate) {
+                continue;
+            }
+
+            // update our neighbor information
             n.UpdateLossRate(newLossRate);
 
             // inform neighbor of the new loss rate
@@ -239,7 +245,7 @@ public class SDNode {
 
         // I am defining the send message as follows:
         // SEND_<source-node1>,<dest-node1>,<num_packets>
-        String message = SEND_PREFIX + sourcePort + "," + currentSend.FinalDestPort + "," + currentSend.NumPackets;
+        String message = SEND_PREFIX + PREFIX_DELIM + sourcePort + "," + currentSend.FinalDestPort + "," + currentSend.NumPackets;
 
         currentSend.NeighborPort = currentSend.NeighborsToSend.remove(0);
         currentSend.StartTime = Calendar.getInstance().getTimeInMillis();
@@ -377,7 +383,7 @@ public class SDNode {
         if (finalDestPort == sourcePort) {
             // I am defining the end-of-send message as follows:
             // ENDSEND_<original-source-node>,<finish-time>
-            String respMessage = END_OF_SEND_PREFIX + originalSourcePort + "," + Calendar.getInstance().getTimeInMillis();
+            String respMessage = END_OF_SEND_PREFIX + PREFIX_DELIM + originalSourcePort + "," + Calendar.getInstance().getTimeInMillis();
 
             // send the final timestamp back to original source
             int neighborPort = routingTable.get(originalSourcePort).NeighborPort;
@@ -492,6 +498,14 @@ public class SDNode {
                 }
             }
 
+            // if we have nothing to send to this neighbor, don't send
+            if (!message.endsWith(" ")) {
+                continue;
+            }
+            else {
+                message = message.trim();
+            }
+
             // send it with selective repeat
             neighbors.get(neighborPort).SrNode.SendMessage(message);
 
@@ -565,8 +579,6 @@ public class SDNode {
                 return;
             }
 
-            System.out.println("Doing change command");
-
             for (int key : updatedNeighbors.keySet()) {
                 System.out.println("Neighbor " + key + " changed to " + updatedNeighbors.get(key));
             }
@@ -599,12 +611,10 @@ public class SDNode {
     // GOOD TO GO
     private class UdpListener implements Runnable {
 
-        private int sourcePort;
         private DatagramSocket socket;
 
-        public UdpListener(int sourcePort) throws SocketException {
-            this.sourcePort = sourcePort;
-            this.socket = new DatagramSocket(sourcePort);
+        public UdpListener(DatagramSocket socket) {
+            this.socket = socket;
         }
 
         @Override
@@ -684,19 +694,17 @@ public class SDNode {
     // it is similar, but tweaks have been made to fit needs of SDNode
     private class SRNode {
 
-        public SRNode(int sourcePort, int destPort, int windowSize, int timeoutMs) throws SocketException {
-            this.sourcePort = sourcePort;
+        public SRNode(DatagramSocket socket, int destPort, int windowSize, int timeoutMs) {
             this.destPort = destPort;
             this.windowSize = windowSize;
             this.timeoutMs = timeoutMs;
-            this.socket = new DatagramSocket(sourcePort);
+            this.socket = socket;
         }
 
-        private int sourcePort;     // send msgs from this port
+        private DatagramSocket socket; // send msgs from this socket
         private int destPort;       // send msgs to this port
         private int windowSize;     // length of the ACK window
         private int timeoutMs;      // packet timeout
-        private DatagramSocket socket;
         private int numDroppedSinceLastDeliver;
 
         private int sendNextSeqNum;
@@ -724,6 +732,12 @@ public class SDNode {
 
             @Override
             public void run() {
+                try {
+                    Thread.sleep(100);
+                }
+                catch (Exception e) {
+                    // swallow
+                }
                 MessageDeliveryFromSR(sourcePort, data, numDropped);
             }
         }
@@ -791,6 +805,7 @@ public class SDNode {
 
                         // deliver data and keep processing
                         new Thread(new MessageDelivery(toDeliver.SourcePort, toDeliver.Data)).start();
+                        //new MessageDelivery(toDeliver.SourcePort, toDeliver.Data).run();
                     }
 
                     // print Receive2
