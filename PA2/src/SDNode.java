@@ -82,6 +82,7 @@ public class SDNode {
         public void UpdateLossRate(double lossRate) {
             LossRate = (double)Math.round(lossRate * 1000)/1000; // round to 3 decimal places
             double weight = 1 / (1 - LossRate);
+            weight = 1 / Math.pow(1 - LossRate, 2);
             Weight = (double)Math.round(weight * 1000)/1000; // round to 3 decimal places
         }
 
