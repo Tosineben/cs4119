@@ -4,9 +4,7 @@ import java.util.*;
 
 public class SDNode {
 
-    // GOOD TO GO
     public static void main(String[] args) {
-
         SDNode node;
         boolean last;
 
@@ -20,7 +18,7 @@ public class SDNode {
                 int nPort = Integer.parseInt(args[i]);
                 double nLossRate = Double.parseDouble(args[i + 1]);
 
-                if (nPort <= 0 || nLossRate < 0) {
+                if (nPort <= 0 || nLossRate < 0 || nLossRate >= 1) {
                     throw new IllegalArgumentException("Arguments outside valid range.");
                 }
 
@@ -37,19 +35,31 @@ public class SDNode {
         }
 
         node.Initialize(last);
-
     }
 
-    private static final Object udpLock = new Object();
+    // *********************************************
+    // ************** PRIVATE FIELDS ***************
+    // *********************************************
 
-    private DatagramSocket socket;
+    // port number of this node and associated socket
     private final int sourcePort;
+    private DatagramSocket socket;
+
+    // marker for if we did at least 1 DV broadcast
     private boolean sentBroadcast;
+
+    // routing table for this node
     private HashMap<Integer, RoutingTableEntry> routingTable = new HashMap<Integer, RoutingTableEntry>();
+
+    // neighbor information
     private HashMap<Integer, Neighbor> neighbors = new HashMap<Integer, Neighbor>();
 
-    private HashMap<String, SendStat> sendStatistics = new HashMap<String, SendStat>();
+    // current "send" command and associated statistics
     private SendCommand currentSend;
+    private HashMap<String, SendStat> sendStatistics = new HashMap<String, SendStat>();
+
+    // lock needed because we receive udp messages on a different thread
+    private static final Object udpLock = new Object();
 
     public SDNode(int port, HashMap<Integer, Double> neighbors) throws SocketException {
         this.sourcePort = port;
@@ -62,7 +72,374 @@ public class SDNode {
         }
     }
 
+    // *********************************************
+    // ***************** METHODS *******************
+    // *********************************************
+
+    // set up the SDNode
+    public void Initialize(boolean isLast) {
+
+        // set up the routing table
+        EnsureRoutingTableIsUpdated();
+
+        // print the routing table
+        DvPrinting.PrintRoutingTable(sourcePort, routingTable);
+
+        // listen for incoming udp on another thread, do this before broadcast
+        new Thread(new UdpListener(socket)).start();
+
+        // start broadcast if we're last
+        if (isLast) {
+            Broadcast();
+        }
+
+        // listen for user input on another thread
+        new Thread(new UserListener()).start();
+    }
+
+    // do the "change" command
+    // tell neighbors about the update loss rates,
+    // and once everyone ACKed, update our routing table
+    private void DoChangeCommand(HashMap<Integer, Double> updatedNeighbors) {
+
+        for (int nPort : updatedNeighbors.keySet()){
+
+            // ignore updates to non-neighbors
+            if (!neighbors.containsKey(nPort)){
+                continue;
+            }
+
+            double newLossRate = updatedNeighbors.get(nPort);
+
+            Neighbor n = neighbors.get(nPort);
+
+            // if loss rate didn't change, don't send update
+            if (n.LossRate == newLossRate) {
+                continue;
+            }
+
+            // update our neighbor information
+            n.UpdateLossRate(newLossRate);
+
+            // inform our neighbor of the change
+            String message = MessageCreator.Change(n.LossRate);
+            n.SrNode.SendMessage(message, false);
+        }
+
+        // now all neighbors have been informed of new loss rate and have ACKed, so kickoff DV
+        if (EnsureRoutingTableIsUpdated()) {
+            DvPrinting.PrintRoutingTable(sourcePort, routingTable);
+            Broadcast();
+        }
+    }
+
+    // do the "send" command
+    private void DoSendCommand(int destPort, int numPackets) {
+
+        // ignore send to nodes we can't reach
+        if (!routingTable.containsKey(destPort)) {
+            System.out.println("Oops, cannot send to " + destPort);
+            return;
+        }
+
+        // don't allow two simultaneous send commands
+        if (currentSend != null) {
+            System.out.println("Oops, you must wait for current send to finish.");
+            return;
+        }
+
+        currentSend = new SendCommand(destPort, numPackets);
+
+        // we're going to send to each neighbor
+        for (int neighborPort : neighbors.keySet()) {
+            currentSend.NeighborsToSend.add(neighborPort);
+        }
+
+        // send to first neighbor
+        // sending to other neighbors gets triggered when this finishes
+        SendToNextNeighbor();
+    }
+
+    // do the "send" command for the next neighbor
+    // this gets called on send start and when each neighbor
+    // send completes, until we've checked all neighbors
+    private void SendToNextNeighbor() {
+
+        // if we've sent to everyone, we're done!
+        if (currentSend.NeighborsToSend.isEmpty()) {
+            currentSend = null;
+            return;
+        }
+
+        String message = MessageCreator.Send(sourcePort, currentSend.FinalDestPort, currentSend.NumPackets);
+
+        currentSend.NeighborPort = currentSend.NeighborsToSend.remove(0); // get next neighbor
+        currentSend.StartTime = Calendar.getInstance().getTimeInMillis(); // mark start time
+
+        neighbors.get(currentSend.NeighborPort).SrNode.SendRandomPackets(currentSend.NumPackets, message);
+    }
+
+    // this gets hit when selective repeat (SRNode) has a set of in-order
+    // packets ready to be delivered
+    private void MessageDeliveryFromSR(int fromPort, String message, int numReceivedSinceLastDeliver){
+
+        String[] msgParts = message.split(MessageCreator.PREFIX_DELIM);
+        String prefix = msgParts[0];
+        String realMessage = msgParts[1];
+
+        if (MessageCreator.CHANGE_PREFIX.equals(prefix)) {
+            HandleChangeFromNeighbor(fromPort, realMessage);
+        }
+        else if (MessageCreator.BROADCAST_PREFIX.equals(prefix)) {
+            HandleDvFromNeighbor(fromPort, realMessage);
+        }
+        else if (MessageCreator.SEND_PREFIX.equals(prefix)) {
+            HandleSendFromNeighbor(fromPort, realMessage, numReceivedSinceLastDeliver);
+        }
+        else if (MessageCreator.END_OF_SEND_PREFIX.equals(prefix)) {
+            HandleEndOfSendFromNeighbor(realMessage);
+        }
+
+        // ignore any other messages
+    }
+
+    // handle a change update from a neighbor (our link loss rate changed)
+    private void HandleChangeFromNeighbor(int neighborPort, String message) {
+        double newLossRate;
+        try {
+            newLossRate = Double.parseDouble(message);
+        }
+        catch (Exception e) {
+            return; // bad change message, just ignore it
+        }
+
+        // update the link
+        neighbors.get(neighborPort).UpdateLossRate(newLossRate);
+
+        // update the routing table and broadcast if necessary
+        if (EnsureRoutingTableIsUpdated()) {
+            DvPrinting.PrintRoutingTable(sourcePort, routingTable);
+            Broadcast();
+        }
+    }
+
+    // handle a distance vector update from a neighbor
+    private void HandleDvFromNeighbor(int fromPort, String message) {
+
+        // print that we received an update
+        DvPrinting.PrintRcvMessage(sourcePort, fromPort);
+
+        HashMap<Integer, RoutingTableEntry> neighborRoutingTable = new HashMap<Integer, RoutingTableEntry>();
+
+        // parse the message into the neighbors routing table
+        try {
+            for (String entryString : message.split(" ")) {
+                String[] entryParts = entryString.split(",");
+
+                int toPort = Integer.parseInt(entryParts[0]);
+                int neighborPort = Integer.parseInt(entryParts[1]);
+                double weight = Double.parseDouble(entryParts[2]);
+
+                neighborRoutingTable.put(toPort, new RoutingTableEntry(toPort, neighborPort, weight));
+            }
+        }
+        catch (Exception e) {
+            // received an improperly formatted message, which should never happen - just ignore it
+            return;
+        }
+
+        // update the neighbors routing table
+        neighbors.get(fromPort).Routes = neighborRoutingTable;
+
+        // update routing table - if it changed print and broadcast
+        if (EnsureRoutingTableIsUpdated()) {
+            DvPrinting.PrintRoutingTable(sourcePort, routingTable);
+            Broadcast();
+        }
+        else if (!sentBroadcast) { // we need to broadcast at least once or DV initialization fails
+            Broadcast();
+        }
+    }
+
+    // handle a send update from neighbor
+    // once we've received all packets, either forward to next neighbor
+    // or print statistics and send pack "timestamp packet"
+    private void HandleSendFromNeighbor(int fromPort, String message, int numReceivedSinceLastDeliver) {
+
+        String[] parts = message.split(",");
+        int originalSourcePort;
+        int finalDestPort;
+        int numPackets;
+
+        try {
+            originalSourcePort = Integer.parseInt(parts[0]);
+            finalDestPort = Integer.parseInt(parts[1]);
+            numPackets = Integer.parseInt(parts[2]);
+        }
+        catch (Exception e) {
+            // received an improperly formatted message, which should never happen - just ignore it
+            return;
+        }
+
+        if (!sendStatistics.containsKey(message)) {
+            SendStat stat = new SendStat(message, 1, numReceivedSinceLastDeliver);
+            sendStatistics.put(message, stat);
+        }
+        else {
+            SendStat currentStat = sendStatistics.get(message);
+            currentStat.NumValidReceived++;
+            currentStat.TotalNumReceived += numReceivedSinceLastDeliver;
+        }
+
+        SendStat stat = sendStatistics.get(message);
+
+        // if we haven't received all of the packets, nothing to do yet
+        if (stat.NumValidReceived != numPackets) {
+            return;
+        }
+
+        // now that we've received all of the packets, we need to:
+        // 1. print actual number packets received and actual loss rate
+        // 2. check to see if we are the final destination
+        // 3. if yes, send final timestamp back to original source port via routing table
+        // 4. if no, start sending according to routing table
+
+        // print out statistics then clear them
+        SdPrinting.PrintFinishReceiving(fromPort, stat.TotalNumReceived, stat.GetLossRate());
+        sendStatistics.remove(message);
+
+        if (finalDestPort == sourcePort) {
+            // send the final timestamp back to original source using routing table
+            String msgToSend = MessageCreator.EndOfSend(originalSourcePort);
+            int neighborPort = routingTable.get(originalSourcePort).NeighborPort;
+            neighbors.get(neighborPort).SrNode.SendMessage(msgToSend, true);
+        }
+        else {
+            // forward message using routing table
+            String msgToSend = MessageCreator.Send(message);
+            int neighborPort = routingTable.get(finalDestPort).NeighborPort;
+            neighbors.get(neighborPort).SrNode.SendRandomPackets(numPackets, msgToSend);
+        }
+
+    }
+
+    // handle a "timestamp packet" from neighbor
+    // either forward to next neighbor or print statistics
+    private void HandleEndOfSendFromNeighbor(String message) {
+        String[] parts = message.split(",");
+
+        int originalSourcePort;
+        long finishTime;
+
+        try {
+            originalSourcePort = Integer.parseInt(parts[0]);
+            finishTime = Long.parseLong(parts[1]);
+        }
+        catch (Exception e){
+            // received an improperly formatted message, which should never happen - just ignore it
+            return;
+        }
+
+        if (originalSourcePort == sourcePort) {
+
+            // if we don't have an outstanding send, something went very wrong
+            if (currentSend == null) {
+                System.out.println("Oops, I was marked as the original sender but don't think I am.");
+                return;
+            }
+
+            // sending is done, print the result
+            long timeCost = finishTime - currentSend.StartTime;
+            SdPrinting.PrintTimeCost(sourcePort, currentSend.NeighborPort, currentSend.FinalDestPort, timeCost);
+
+            // send to the next neighbor
+            SendToNextNeighbor();
+        }
+        else {
+            // not for me, so just forward it along
+            String msgToSend = MessageCreator.EndOfSend(message);
+            int neighborPort = routingTable.get(originalSourcePort).NeighborPort;
+            neighbors.get(neighborPort).SrNode.SendMessage(msgToSend, true);
+        }
+
+    }
+
+    // updates routing table based on neighbor info, returns true if table changed
+    private boolean EnsureRoutingTableIsUpdated() {
+
+        HashMap<Integer, RoutingTableEntry> newRoutingTable = new HashMap<Integer, RoutingTableEntry>();
+
+        // initialize routing table with direct neighbor links
+        for (Neighbor neighbor : neighbors.values()) {
+            RoutingTableEntry entry = new RoutingTableEntry(neighbor.Port, neighbor.Port, neighbor.Weight);
+            newRoutingTable.put(entry.ToPort, entry);
+        }
+
+        // examine each neighbors routes and update ours accordingly
+        for (Neighbor neighbor : neighbors.values()) {
+            for (RoutingTableEntry neighborEntry : neighbor.Routes.values()) {
+                RoutingTableEntry newEntry = new RoutingTableEntry(neighborEntry.ToPort, neighbor.Port, neighborEntry.Weight + neighbor.Weight);
+
+                // if we don't have this route yet, add it
+                if (!newRoutingTable.containsKey(newEntry.ToPort)) {
+                    newRoutingTable.put(newEntry.ToPort, newEntry);
+                }
+                else { // otherwise only add it if it's better
+                    RoutingTableEntry existingEntry = newRoutingTable.get(neighborEntry.ToPort);
+                    if (newEntry.Weight < existingEntry.Weight) {
+                        newRoutingTable.put(newEntry.ToPort, newEntry);
+                    }
+                }
+            }
+        }
+
+        // see if there are any differences between our new and old routing table
+        boolean updated = false;
+        for (RoutingTableEntry newEntry : newRoutingTable.values()) {
+            if (!routingTable.containsKey(newEntry.ToPort)) {
+                updated = true;
+                break;
+            }
+            RoutingTableEntry existingEntry = routingTable.get(newEntry.ToPort);
+            if (existingEntry.NeighborPort != newEntry.NeighborPort || existingEntry.Weight != newEntry.Weight) {
+                updated = true;
+                break;
+            }
+        }
+
+        routingTable = newRoutingTable;
+        return updated;
+    }
+
+    // Distance Vector broadcast of our routing table to all neighbors
+    private void Broadcast() {
+        for (int neighborPort : neighbors.keySet()) {
+
+            String message = MessageCreator.Broadcast(neighborPort, routingTable);
+
+            // if we have nothing to send, skip this neighbor
+            if (message == null) {
+                continue;
+            }
+
+            // send it with selective repeat
+            neighbors.get(neighborPort).SrNode.SendMessage(message, false);
+
+            // print that we sent it
+            DvPrinting.PrintSendMessage(sourcePort, neighborPort);
+        }
+
+        // mark that we have sent at least 1 broadcast
+        sentBroadcast = true;
+    }
+
+    // *********************************************
+    // ************** HELPER CLASSES ***************
+    // *********************************************
+
     // info we need to store about each neighbor to compute routing table
+    // also note that each neighbor has an SRNode, because we keep track
+    // of selective repeat on a per neighbor basis
     private class Neighbor {
         public final int Port;
         public double Weight;
@@ -81,8 +458,8 @@ public class SDNode {
 
         public void UpdateLossRate(double lossRate) {
             LossRate = (double)Math.round(lossRate * 1000)/1000; // round to 3 decimal places
-            double weight = 1 / (1 - LossRate);
-            weight = 1 / Math.pow(1 - LossRate, 2);
+            // double weight = 1 / (1 - LossRate);
+            double weight = 1 / Math.pow(1 - LossRate, 2);
             Weight = (double)Math.round(weight * 1000)/1000; // round to 3 decimal places
         }
 
@@ -139,386 +516,8 @@ public class SDNode {
 
     }
 
-    // helpers for defining packet payloads
-    private static final String PREFIX_DELIM = "_";
-    private static final String CHANGE_PREFIX = "CHANGE";
-    private static final String BROADCAST_PREFIX = "DV";
-    private static final String SEND_PREFIX = "SEND";
-    private static final String END_OF_SEND_PREFIX = "ENDSEND";
-
-    // GOOD TO GO
-    public void Initialize(boolean isLast) {
-
-        // set up the routing table
-        EnsureRoutingTableIsUpdated();
-
-        // print the routing table
-        DvPrinting.PrintRoutingTable(sourcePort, routingTable);
-
-        // listen for incoming udp on another thread, do this before broadcast
-        new Thread(new UdpListener(socket)).start();
-
-        // start broadcast if we're last
-        if (isLast) {
-            Broadcast();
-        }
-
-        // listen for user input on another thread
-        new Thread(new UserListener()).start();
-
-        // this thread dies here, but we have 2 threads running:
-        // thread 1 is receiving UDP messages
-        // thread 2 is receiving user input
-    }
-
-    // GOOD TO GO
-    private void DoChangeCommand(HashMap<Integer, Double> updatedNeighbors) {
-
-        for (int nPort : updatedNeighbors.keySet()){
-
-            // ignore updates to non-neighbors
-            if (!neighbors.containsKey(nPort)){
-                continue;
-            }
-
-            double newLossRate = updatedNeighbors.get(nPort);
-
-            Neighbor n = neighbors.get(nPort);
-
-            // if loss rate didn't change, don't send update
-            if (n.LossRate == newLossRate) {
-                continue;
-            }
-
-            // update our neighbor information
-            n.UpdateLossRate(newLossRate);
-
-            // inform neighbor of the new loss rate
-            // NOTE: i am defining this message to be of the form 'CHANGE_<new-loss-rate>'
-            n.SrNode.SendMessage(CHANGE_PREFIX + PREFIX_DELIM + n.LossRate);
-        }
-
-        // now all neighbors have been informed of new loss rate and have ACKed, so kickoff DV
-        if (EnsureRoutingTableIsUpdated()) {
-            DvPrinting.PrintRoutingTable(sourcePort, routingTable);
-            Broadcast();
-        }
-    }
-
-    // GOOD TO GO
-    private void DoSendCommand(int destPort, int numPackets) {
-
-        // ignore send to nodes we can't reach
-        if (!routingTable.containsKey(destPort)) {
-            System.out.println("Oops, cannot send to " + destPort);
-            return;
-        }
-
-        // don't allow two simultaneous send commands
-        if (currentSend != null) {
-            System.out.println("Oops, you must wait for current send to finish.");
-            return;
-        }
-
-        currentSend = new SendCommand(destPort, numPackets);
-
-        // we're going to send to each neighbor
-        for (int neighborPort : neighbors.keySet()) {
-            currentSend.NeighborsToSend.add(neighborPort);
-        }
-
-        // send to one neighbor for now
-        SendToNextNeighbor();
-
-        // when we get a result back, that triggers sending to the next neighbor
-
-    }
-
-    // GOOD TO GO
-    private void SendToNextNeighbor() {
-
-        // if we've sent to everyone, we're done!
-        if (currentSend.NeighborsToSend.isEmpty()) {
-            currentSend = null;
-            return;
-        }
-
-        // I am defining the send message as follows:
-        // SEND_<source-node1>,<dest-node1>,<num_packets>
-        String message = SEND_PREFIX + PREFIX_DELIM + sourcePort + "," + currentSend.FinalDestPort + "," + currentSend.NumPackets;
-
-        currentSend.NeighborPort = currentSend.NeighborsToSend.remove(0);
-        currentSend.StartTime = Calendar.getInstance().getTimeInMillis();
-
-        neighbors.get(currentSend.NeighborPort).SrNode.SendRandomPackets(currentSend.NumPackets, message);
-    }
-
-    // GOOD TO GO
-    private void MessageDeliveryFromSR(int fromPort, String message, int numReceivedSinceLastDeliver){
-
-        System.out.println("MESSAGE DELIVERY. " + fromPort + " says " + message);
-
-        String[] msgParts = message.split(PREFIX_DELIM);
-        String prefix = msgParts[0];
-        String realMessage = msgParts[1];
-
-        if (CHANGE_PREFIX.equals(prefix)) {
-            HandleChangeFromNeighbor(fromPort, realMessage);
-        }
-        else if (BROADCAST_PREFIX.equals(prefix)) {
-            HandleDvFromNeighbor(fromPort, realMessage);
-        }
-        else if (SEND_PREFIX.equals(prefix)) {
-            HandleSendFromNeighbor(fromPort, realMessage, numReceivedSinceLastDeliver);
-        }
-        else if (END_OF_SEND_PREFIX.equals(prefix)) {
-            HandleEndOfSendFromNeighbor(realMessage);
-        }
-
-        // ignore any other messages
-    }
-
-    // GOOD TO GO
-    private void HandleChangeFromNeighbor(int neighborPort, String message) {
-        double newLossRate;
-        try {
-            newLossRate = Double.parseDouble(message);
-        }
-        catch (Exception e) {
-            return; // bad change message, just ignore it
-        }
-
-        // update the link
-        neighbors.get(neighborPort).UpdateLossRate(newLossRate);
-
-        // update the routing table and broadcast if necessary
-        if (EnsureRoutingTableIsUpdated()) {
-            DvPrinting.PrintRoutingTable(sourcePort, routingTable);
-            Broadcast();
-        }
-    }
-
-    // GOOD TO GO
-    private void HandleDvFromNeighbor(int fromPort, String message) {
-
-        // print that we received an update
-        DvPrinting.PrintRcvMessage(sourcePort, fromPort);
-
-        HashMap<Integer, RoutingTableEntry> neighborRoutingTable = new HashMap<Integer, RoutingTableEntry>();
-
-        // parse the message into the neighbors routing table
-        try {
-            for (String entryString : message.split(" ")) {
-                String[] entryParts = entryString.split(",");
-
-                int toPort = Integer.parseInt(entryParts[0]);
-                int neighborPort = Integer.parseInt(entryParts[1]);
-                double weight = Double.parseDouble(entryParts[2]);
-
-                neighborRoutingTable.put(toPort, new RoutingTableEntry(toPort, neighborPort, weight));
-            }
-        }
-        catch (Exception e) {
-            // received an improperly formatted message, which should never happen - just ignore it
-            return;
-        }
-
-        // update the neighbors routing table
-        neighbors.get(fromPort).Routes = neighborRoutingTable;
-
-        // update routing table - if it changed print and broadcast
-        if (EnsureRoutingTableIsUpdated()) {
-            DvPrinting.PrintRoutingTable(sourcePort, routingTable);
-            Broadcast();
-        }
-        else if (!sentBroadcast) { // we need to broadcast at least once or DV initialization fails
-            Broadcast();
-        }
-    }
-
-    // GOOD TO GO
-    private void HandleSendFromNeighbor(int fromPort, String message, int numReceivedSinceLastDeliver) {
-
-        String[] parts = message.split(",");
-        int originalSourcePort;
-        int finalDestPort;
-        int numPackets;
-
-        try {
-            originalSourcePort = Integer.parseInt(parts[0]);
-            finalDestPort = Integer.parseInt(parts[1]);
-            numPackets = Integer.parseInt(parts[2]);
-        }
-        catch (Exception e) {
-            // received an improperly formatted message, which should never happen - just ignore it
-            return;
-        }
-
-        if (!sendStatistics.containsKey(message)) {
-            SendStat stat = new SendStat(message, 1, numReceivedSinceLastDeliver);
-            sendStatistics.put(message, stat);
-        }
-        else {
-            SendStat currentStat = sendStatistics.get(message);
-            currentStat.NumValidReceived++;
-            currentStat.TotalNumReceived += numReceivedSinceLastDeliver;
-        }
-
-        SendStat stat = sendStatistics.get(message);
-
-        // if we haven't received all of the packets, nothing to do yet
-        if (stat.NumValidReceived != numPackets) {
-            return;
-        }
-
-        // now that we've received all of the packets, we need to:
-        // 1. print actual number packets received and actual loss rate
-        // 2. check to see if we are the final destination
-        // 3. if yes, send final timestamp back to original source port via routing table
-        // 4. if no, start sending according to routing table
-
-        // print out statistics then clear them
-        SdPrinting.PrintFinishReceiving(fromPort, stat.TotalNumReceived, stat.GetLossRate());
-        sendStatistics.remove(message);
-
-        if (finalDestPort == sourcePort) {
-            // I am defining the end-of-send message as follows:
-            // ENDSEND_<original-source-node>,<finish-time>
-            String respMessage = END_OF_SEND_PREFIX + PREFIX_DELIM + originalSourcePort + "," + Calendar.getInstance().getTimeInMillis();
-
-            // send the final timestamp back to original source
-            int neighborPort = routingTable.get(originalSourcePort).NeighborPort;
-            neighbors.get(neighborPort).SrNode.SendMessage(respMessage);
-        }
-        else {
-            // forward message using routing table
-            int neighborPort = routingTable.get(finalDestPort).NeighborPort;
-            neighbors.get(neighborPort).SrNode.SendRandomPackets(numPackets, SEND_PREFIX + PREFIX_DELIM + message);
-        }
-
-    }
-
-    // GOOD TO GO
-    private void HandleEndOfSendFromNeighbor(String message) {
-        String[] parts = message.split(",");
-
-        int originalSourcePort;
-        long finishTime;
-
-        try {
-            originalSourcePort = Integer.parseInt(parts[0]);
-            finishTime = Long.parseLong(parts[1]);
-        }
-        catch (Exception e){
-            // received an improperly formatted message, which should never happen - just ignore it
-            return;
-        }
-
-        if (originalSourcePort == sourcePort) {
-
-            // if we don't have an outstanding send, something went very wrong
-            if (currentSend == null) {
-                System.out.println("Oops, I was marked as the original sender but don't think I am.");
-                return;
-            }
-
-            // sending is done, print the result
-            long timeCost = finishTime - currentSend.StartTime;
-            SdPrinting.PrintTimeCost(sourcePort, currentSend.NeighborPort, currentSend.FinalDestPort, timeCost);
-
-            // send to the next neighbor
-            SendToNextNeighbor();
-        }
-        else {
-            // not for me, so just forward it along
-            int neighborPort = routingTable.get(originalSourcePort).NeighborPort;
-            neighbors.get(neighborPort).SrNode.SendMessage(END_OF_SEND_PREFIX + PREFIX_DELIM + message);
-        }
-
-    }
-
-    // GOOD TO GO
-    // updates routing table based on neighbor info, returns true if table changed
-    private boolean EnsureRoutingTableIsUpdated() {
-
-        HashMap<Integer, RoutingTableEntry> newRoutingTable = new HashMap<Integer, RoutingTableEntry>();
-
-        // initialize routing table with direct neighbor links
-        for (Neighbor neighbor : neighbors.values()) {
-            RoutingTableEntry entry = new RoutingTableEntry(neighbor.Port, neighbor.Port, neighbor.Weight);
-            newRoutingTable.put(entry.ToPort, entry);
-        }
-
-        // examine each neighbors routes and update ours accordingly
-        for (Neighbor neighbor : neighbors.values()) {
-            for (RoutingTableEntry neighborEntry : neighbor.Routes.values()) {
-                RoutingTableEntry newEntry = new RoutingTableEntry(neighborEntry.ToPort, neighbor.Port, neighborEntry.Weight + neighbor.Weight);
-
-                // if we don't have this route yet, add it
-                if (!newRoutingTable.containsKey(newEntry.ToPort)) {
-                    newRoutingTable.put(newEntry.ToPort, newEntry);
-                }
-                else { // otherwise only add it if it's better
-                    RoutingTableEntry existingEntry = newRoutingTable.get(neighborEntry.ToPort);
-                    if (newEntry.Weight < existingEntry.Weight) {
-                        newRoutingTable.put(newEntry.ToPort, newEntry);
-                    }
-                }
-            }
-        }
-
-        // see if there are any differences between our new and old routing table
-        boolean updated = false;
-        for (RoutingTableEntry newEntry : newRoutingTable.values()) {
-            if (!routingTable.containsKey(newEntry.ToPort)) {
-                updated = true;
-                break;
-            }
-            RoutingTableEntry existingEntry = routingTable.get(newEntry.ToPort);
-            if (existingEntry.NeighborPort != newEntry.NeighborPort || existingEntry.Weight != newEntry.Weight) {
-                updated = true;
-                break;
-            }
-        }
-
-        routingTable = newRoutingTable;
-        return updated;
-    }
-
-    // GOOD TO GO
-    private void Broadcast() {
-        for (int neighborPort : neighbors.keySet()) {
-
-            // I am defining the broadcast message as follows:
-            // DV_<reachable-node1>,<next-node1>,<weight1> <reachable-node2>,<next-node2>,<weight2> ...
-            String message = BROADCAST_PREFIX + PREFIX_DELIM;
-            for (RoutingTableEntry entry : routingTable.values()) {
-                // only tell neighbor we can get to places that don't go through them
-                if (entry.NeighborPort != neighborPort && entry.ToPort != neighborPort){
-                    message += entry.ToPort + "," + entry.NeighborPort + "," + entry.Weight + " ";
-                }
-            }
-
-            // if we have nothing to send to this neighbor, don't send
-            if (!message.endsWith(" ")) {
-                continue;
-            }
-            else {
-                message = message.trim();
-            }
-
-            // send it with selective repeat
-            neighbors.get(neighborPort).SrNode.SendMessage(message);
-
-            // print that we sent it
-            DvPrinting.PrintSendMessage(sourcePort, neighborPort);
-        }
-
-        // mark that we have sent at least 1 broadcast
-        sentBroadcast = true;
-    }
-
-    // GOOD TO GO
+    // thread that listens for user input and delegates
+    // different commands to the SDNode
     private class UserListener implements Runnable {
 
         @Override
@@ -568,7 +567,7 @@ public class SDNode {
                     int nPort = Integer.parseInt(msgParts[i]);
                     double nLossRate = Double.parseDouble(msgParts[i + 1]);
 
-                    if (nPort <= 0 || nLossRate < 0) {
+                    if (nPort <= 0 || nLossRate < 0 || nLossRate >= 1) {
                         throw new IllegalArgumentException("Arguments outside valid range.");
                     }
 
@@ -609,11 +608,11 @@ public class SDNode {
 
     }
 
-    // GOOD TO GO
+    // thread that listens for udp messages, simulates dropped
+    // packets, and informs appropriate SRNode on successful receive
     private class UdpListener implements Runnable {
 
         private DatagramSocket socket;
-
         public UdpListener(DatagramSocket socket) {
             this.socket = socket;
         }
@@ -643,14 +642,18 @@ public class SDNode {
 
                 Neighbor n = neighbors.get(fromPort);
 
-                // all packets start with packet number except special ACK packets
+                // if it's not an ACK, mark that we received from neighbor
+                if (!msg.startsWith("ACK")) {
+                    n.SrNode.numReceivedSinceLastDeliver++;
+                }
+
+                // simulates "dropped" packets based on neighbor loss rate
+                if (new Random().nextDouble() < n.LossRate) {
+                    continue;
+                }
+
+                // tell SrNode that we either received an ACK or a message
                 if (msg.startsWith("ACK")) {
-
-                    // receiver simulates "dropped" packets based on neighbor loss rate
-                    if (new Random().nextDouble() < n.LossRate) {
-                        continue;
-                    }
-
                     int packetNum;
                     try {
                         packetNum = Integer.parseInt(msg.split(",")[1]);
@@ -661,15 +664,6 @@ public class SDNode {
                     n.SrNode.HandleReceivedAck(packetNum);
                 }
                 else {
-
-                    // mark that we received from neighbor
-                    n.SrNode.numReceivedSinceLastDeliver++;
-
-                    // receiver simulates "dropped" packets based on neighbor loss rate
-                    if (new Random().nextDouble() < n.LossRate) {
-                        continue;
-                    }
-
                     Packet p = new Packet(msg, fromPort, sourcePort);
                     n.SrNode.HandleReceived(p);
                 }
@@ -677,7 +671,7 @@ public class SDNode {
         }
     }
 
-    // GOOD TO GO
+    // an individual packet to be sent with UDP
     private class Packet {
         public final int SourcePort;
         public final int DestPort;
@@ -717,12 +711,13 @@ public class SDNode {
             this.socket = socket;
         }
 
-        private DatagramSocket socket; // send msgs from this socket
-        private int destPort;       // send msgs to this port
-        private int windowSize;     // length of the ACK window
-        private int timeoutMs;      // packet timeout
-        private int numReceivedSinceLastDeliver;
+        // private fields used by Selective Repeat
+        private DatagramSocket socket;
+        private int destPort;
+        private int windowSize;
+        private int timeoutMs;
 
+        // private fields used by Selective Repeat SENDER
         private int sendNextSeqNum;
         private int sendWindowBase;
         private HashSet<Integer> ackedPackets = new HashSet<Integer>();
@@ -730,32 +725,16 @@ public class SDNode {
         private HashMap<Integer, Packet> sendPackets = new HashMap<Integer, Packet>();
         private HashMap<Integer, Long> inFlightPacketTimes = new HashMap<Integer, Long>();
 
+        // private fields used by Select Repeat RECEIVER
         private int rcvWindowBase;
         private HashMap<Integer, Packet> rcvdPackets = new HashMap<Integer, Packet>();
 
-        private class MessageDelivery implements Runnable {
+        // extra info for "send" command
+        // when we deliver messages, include the total number of packets received
+        private int numReceivedSinceLastDeliver;
 
-            private int numReceived;
-            private List<Packet> toDeliver;
-
-            public MessageDelivery(List<Packet> toDeliver) {
-                this.toDeliver = toDeliver;
-                this.numReceived = numReceivedSinceLastDeliver;
-                numReceivedSinceLastDeliver = 0;
-            }
-
-            @Override
-            public void run() {
-                synchronized (udpLock) {
-                    for (Packet p : toDeliver) {
-                        MessageDeliveryFromSR(p.SourcePort, p.Data, numReceived);
-                        numReceived = 0;
-                    }
-                }
-            }
-        }
-
-        // GOOD TO GO
+        // when we receive an ACK, possibly shift window and possibly send
+        // more packets if any are waiting to be sent
         public void HandleReceivedAck(int packetNum) {
 
             if (ackedPackets.contains(packetNum) || packetNum < sendWindowBase || packetNum >= sendWindowBase + windowSize) {
@@ -775,23 +754,19 @@ public class SDNode {
                     sendWindowBase++;
                 }
 
-                // print the ACK2
-                SrSenderPrinting.PrintAck2(packetNum, sendWindowBase, sendWindowBase + windowSize);
-
                 // send all pending packets that are inside the new window
                 while (!queuedPackets.isEmpty() && queuedPackets.get(0) < sendWindowBase + windowSize) {
                     int nextPacketToSend = queuedPackets.remove(0);
                     SendOnePacket(sendPackets.get(nextPacketToSend));
                 }
             }
-            else {
-                // just print ACK1, don't move window or send anything new
-                SrSenderPrinting.PrintAck1(packetNum);
-            }
+
+            // note that SDNode does not print any SR info (ACK1, ACK2)
 
         }
 
-        // GOOD TO GO
+        // when we receive a packet, possibly shift window and
+        // deliver data to next layer up, and always send an ACK
         public void HandleReceived(Packet payload) {
 
             if (payload.Number >= rcvWindowBase + windowSize) {
@@ -802,75 +777,62 @@ public class SDNode {
 
             // send an ACK no matter what
             UnreliableSend(payload.SourcePort, "ACK," + payload.Number);
-            SrReceiverPrinting.PrintSendAck(payload.Number);
 
             // if the packet is before our window or we've received it, discard it
             if (payload.Number < rcvWindowBase || rcvdPackets.containsKey(payload.Number)) {
-                SrReceiverPrinting.PrintDiscardPacket(payload.Number, payload.Data);
-            }
-            else {
-                // mark the packet received
-                rcvdPackets.put(payload.Number, payload);
-
-                // if this is the first packet in our window, shift window and deliver data (in theory)
-                if (payload.Number == rcvWindowBase) {
-
-                    // deliver data and shift the window up to the next packet we need
-                    List<Packet> toDeliver = new ArrayList<Packet>();
-                    while (rcvdPackets.containsKey(rcvWindowBase)) {
-                        Packet p = rcvdPackets.get(rcvWindowBase); // TODO should this be remove instead of get?
-                        //MessageDeliveryFromSR(p.SourcePort, p.Data, numReceivedSinceLastDeliver);
-                        //numReceivedSinceLastDeliver = 0;
-                        toDeliver.add(p);
-                        rcvWindowBase++;
-                    }
-
-                    // deliver data and keep processing
-                    new Thread(new MessageDelivery(toDeliver)).start();
-
-                    // print Receive2
-                    SrReceiverPrinting.PrintReceive2(payload.Number, payload.Data, rcvWindowBase, rcvWindowBase + windowSize);
-                }
-                else {
-                    // just print Receive1, don't shift window or deliver data
-                    SrReceiverPrinting.PrintReceive1(payload.Number, payload.Data);
-                }
+                return;
             }
 
+            // mark the packet received
+            rcvdPackets.put(payload.Number, payload);
+
+            // if this is the first packet in our window, shift window and deliver data (in theory)
+            if (payload.Number == rcvWindowBase) {
+
+                // deliver data and shift the window up to the next packet we need
+                List<Packet> toDeliver = new ArrayList<Packet>();
+                while (rcvdPackets.containsKey(rcvWindowBase)) {
+                    Packet p = rcvdPackets.get(rcvWindowBase);
+                    toDeliver.add(p);
+                    rcvWindowBase++;
+                }
+
+                // deliver data and keep processing
+                new Thread(new MessageDelivery(toDeliver)).start();
+            }
+
+            // note that SDNode does not print any SR info (Discard, Receive1, Receive2)
         }
 
-        // GOOD TO GO
+        // send a bunch of random packets
         public void SendRandomPackets(final int numPackets, String message) {
-
             List<Packet> packets = new ArrayList<Packet>();
-
             for (int i = 0; i < numPackets; i++) {
                 Packet payload = new Packet(message, sendNextSeqNum++, sourcePort, destPort);
                 packets.add(payload);
             }
-
-            SendPacketsImpl(packets);
-
+            SendPacketsImpl(packets, true);
         }
 
-        // GOOD TO GO
-        public void SendMessage(final String message) {
-
+        // send a "normal" message
+        public void SendMessage(final String message, boolean shouldPrintStartFinish) {
             List<Packet> packets = new ArrayList<Packet>();
-
             Packet payload = new Packet(message, sendNextSeqNum++, sourcePort, destPort);
             packets.add(payload);
-
-            SendPacketsImpl(packets);
-
+            SendPacketsImpl(packets, shouldPrintStartFinish);
         }
 
-        // GOOD TO GO
-        private void SendPacketsImpl(List<Packet> packets) {
+        // ensures that a set of packets is sent successfully
+        // sends them once, then monitors for timeouts until
+        // all packets are ACKed
+        private void SendPacketsImpl(List<Packet> packets, boolean shouldPrintStartFinish) {
 
-            // print that we're starting
-            SdPrinting.PrintStartSending(sourcePort);
+            // if we're printing, print finish
+            if (shouldPrintStartFinish) {
+                SdPrinting.PrintStartSending(sourcePort);
+            }
 
+            // lock here so that we only handle on "send" command at a time
             synchronized (udpLock) {
 
                 // send or queue all of the packets
@@ -885,18 +847,16 @@ public class SDNode {
                         SendOnePacket(payload);
                     }
                 }
-            }
+
                 // wait for all packets to be ACKed and check for timeouts
                 while (true) {
 
-                    // wait 10 ms
+                    // check for timeouts every 10ms
                     try {
                         Thread.sleep(10);
                     } catch (InterruptedException e) {
-                        // if we get aborted, we're screwed
+                        // if the thread gets aborted, we're screwed
                     }
-
-                    synchronized (udpLock) {
 
                     // if nothing is in flight, we're done!
                     if (inFlightPacketTimes.isEmpty()) {
@@ -913,30 +873,29 @@ public class SDNode {
 
                         // check for timeout
                         if (inFlightPacketTimes.get(packetNum) + timeoutMs < Calendar.getInstance().getTimeInMillis()) {
-                            SrSenderPrinting.PrintTimeout(packetNum);
+                            // note that SDNode does not print anything when timeouts happen
                             SendOnePacket(sendPackets.get(packetNum));
                         }
                     }
-
                 }
 
+                // at this point, all packets have been ACKed
+                // print that we're done and clear out send buffer
+
+                if (shouldPrintStartFinish) {
+                    SdPrinting.PrintFinishSending(sourcePort);
+                }
+                sendPackets.clear();
             }
-
-            // print that we finished
-            SdPrinting.PrintFinishSending(sourcePort);
-
-            // now that we're done, no need to hold on to packets
-            sendPackets.clear();
         }
 
-        // GOOD TO GO
+        // send a packet unreliably and update it's timestamp
         private void SendOnePacket(final Packet payload) {
             inFlightPacketTimes.put(payload.Number, Calendar.getInstance().getTimeInMillis());
             UnreliableSend(payload.DestPort, payload.toString());
-            SrSenderPrinting.PrintSendPacket(payload.Number, payload.Data);
         }
 
-        // GOOD TO GO
+        // send a message unreliably to a port
         private void UnreliableSend(int toPort, String message) {
             try {
                 // all communication is on the same machine, so use local host
@@ -950,9 +909,101 @@ public class SDNode {
             }
         }
 
+        // thread for delivering messages to upper layer
+        // the basic idea is that we want to continue to receive ACKs
+        // even when Selective Repeat determines it has a set of
+        // in-order packets to deliver. this is not long-living, so
+        // we have at most 3 threads open at once (one listening for user,
+        // one listening for udp, and this one which processes messages)
+        private class MessageDelivery implements Runnable {
+
+            private int numReceived;
+            private List<Packet> toDeliver;
+
+            public MessageDelivery(List<Packet> toDeliver) {
+                this.toDeliver = toDeliver;
+                this.numReceived = numReceivedSinceLastDeliver;
+                numReceivedSinceLastDeliver = 0;
+            }
+
+            @Override
+            public void run() {
+                // lock because we cannot deliver a message if we're still sending
+                synchronized (udpLock) {
+                    for (Packet p : toDeliver) {
+                        MessageDeliveryFromSR(p.SourcePort, p.Data, numReceived);
+                        numReceived = 0;
+                    }
+                }
+            }
+        }
     }
 
-    // GOOD TO GO
+    // defines the packet contents of each type of message
+    private static class MessageCreator {
+
+        // helpers for defining packet payloads
+        public static final String PREFIX_DELIM = "_";
+        public static final String CHANGE_PREFIX = "CHANGE";
+        public static final String BROADCAST_PREFIX = "DV";
+        public static final String SEND_PREFIX = "SEND";
+        public static final String END_OF_SEND_PREFIX = "END";
+
+        public static String EndOfSend(int originalSourcePort) {
+            // I am defining the end-of-send message as follows:
+            // END_<original-source-node>,<finish-time>
+
+            return END_OF_SEND_PREFIX + PREFIX_DELIM + originalSourcePort + "," + Calendar.getInstance().getTimeInMillis();
+        }
+
+        public static String EndOfSend(String receivedMessage) {
+            // this happens when forwarding a message back to original source
+            return END_OF_SEND_PREFIX + PREFIX_DELIM + receivedMessage;
+        }
+
+        public static String Send(int sourcePort, int finalDestPort, int numPackets) {
+            // I am defining the send message as follows:
+            // SEND_<source-node>,<dest-node>,<num_packets>
+
+            return SEND_PREFIX + PREFIX_DELIM + sourcePort + "," + finalDestPort + "," + numPackets;
+        }
+
+        public static String Send(String receivedMessage) {
+            // this happens when forwarding a message to the final destination
+            return SEND_PREFIX + PREFIX_DELIM + receivedMessage;
+        }
+
+        public static String Change(double newLossRate) {
+            // I am defining the change message as follows:
+            // CHANGE_<new-loss-rate>
+
+            return CHANGE_PREFIX + PREFIX_DELIM + newLossRate;
+        }
+
+        public static String Broadcast(int neighborPort, HashMap<Integer, RoutingTableEntry> routingTable) {
+            // I am defining the broadcast message as follows:
+            // DV_<reachable-node1>,<next-node1>,<weight1> <reachable-node2>,<next-node2>,<weight2> ...
+
+            String message = BROADCAST_PREFIX + PREFIX_DELIM;
+            for (RoutingTableEntry entry : routingTable.values()) {
+                // only tell neighbor we can get to places that don't go through them
+                if (entry.NeighborPort != neighborPort && entry.ToPort != neighborPort){
+                    message += entry.ToPort + "," + entry.NeighborPort + "," + entry.Weight + " ";
+                }
+            }
+
+            // if we have nothing to send to this neighbor, don't send
+            if (!message.endsWith(" ")) {
+                return null;
+            }
+            else {
+                return message.trim();
+            }
+        }
+
+    }
+
+    // defines what we print for the SD component
     private static class SdPrinting {
 
         public static void PrintStartSending(int nodePort) {
@@ -980,7 +1031,7 @@ public class SDNode {
 
     }
 
-    // GOOD TO GO
+    // defines what we print for the DV component
     private static class DvPrinting {
 
         public static void PrintSendMessage(int sourceNodePort, int destNodePort) {
@@ -1010,100 +1061,5 @@ public class SDNode {
         }
 
     }
-
-    // GOOD TO GO
-    private static class SrSenderPrinting {
-
-        public static void PrintSendPacket(int packetNum, String data) {
-            if (!PrintSr) {
-                return;
-            }
-
-            long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = "[" + timestamp + "] packet-" + packetNum + " " + data + " sent";
-            System.out.println(toPrint);
-        }
-
-        // Receive Ack-1 refers to receiving the ack but no window advancement occurs
-        public static void PrintAck1(int packetNum) {
-            if (!PrintSr) {
-                return;
-            }
-
-            long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = "[" + timestamp + "] ACK-" + packetNum + " received";
-            System.out.println(toPrint);
-        }
-
-        // window advancement occurs for Receive Ack-2, with starting/ending packet number of the window
-        public static void PrintAck2(int packetNum, int windowStart, int windowEnd) {
-            if (!PrintSr) {
-                return;
-            }
-
-            long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = "[" + timestamp + "] ACK-" + packetNum + " received; window = [" + windowStart + "," + windowEnd + "]";
-            System.out.println(toPrint);
-        }
-
-        public static void PrintTimeout(int packetNum) {
-            if (!PrintSr) {
-                return;
-            }
-
-            long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = "[" + timestamp + "] packet-" + packetNum + " timeout";
-            System.out.println(toPrint);
-        }
-
-    }
-
-    // GOOD TO GO
-    private static class SrReceiverPrinting {
-
-        public static void PrintReceive1(int packetNum, String data) {
-            if (!PrintSr) {
-                return;
-            }
-
-            long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = "[" + timestamp + "] packet-" + packetNum + " " + data + " received";
-            System.out.println(toPrint);
-        }
-
-        public static void PrintReceive2(int packetNum, String data, int windowStart, int windowEnd) {
-            if (!PrintSr) {
-                return;
-            }
-
-            long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = "[" + timestamp + "] packet-" + packetNum + " " + data + " received; window = [" + windowStart + "," + windowEnd + "]";
-            System.out.println(toPrint);
-        }
-
-        public static void PrintSendAck(int packetNum) {
-            if (!PrintSr) {
-                return;
-            }
-
-            long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = "[" + timestamp + "] ACK-" + packetNum + " sent";
-            System.out.println(toPrint);
-        }
-
-        public static void PrintDiscardPacket(int packetNum, String data) {
-            if (!PrintSr) {
-                return;
-            }
-
-            long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = "[" + timestamp + "] packet-" + packetNum + " " + data + " discarded";
-            System.out.println(toPrint);
-        }
-
-    }
-
-    // TODO remove
-    private static boolean PrintSr = false;
 
 }

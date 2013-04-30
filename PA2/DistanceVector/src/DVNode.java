@@ -18,9 +18,11 @@ public class DVNode {
             for (int i = 1; i < args.length - 1; i += 2) {
                 int nPort = Integer.parseInt(args[i]);
                 double nWeight = Double.parseDouble(args[i + 1]);
-                if (nWeight < 0) {
-                    throw new IllegalArgumentException("Cannot have negative weight.");
+
+                if (nPort <= 0 || nWeight < 0) {
+                    throw new IllegalArgumentException("Arguments outside valid range.");
                 }
+
                 neighbors.put(nPort, nWeight);
             }
 
@@ -37,17 +39,19 @@ public class DVNode {
 
     }
 
-    private final int port;
+    // *********************************************
+    // ************** PRIVATE FIELDS ***************
+    // *********************************************
+
+    private final int sourcePort;
     private boolean sentBroadcast;
     private DatagramSocket socket;
-    private HashMap<Integer, RoutingTableEntry> routingTable;
-    private HashMap<Integer, Neighbor> neighbors;
+    private HashMap<Integer, RoutingTableEntry> routingTable = new HashMap<Integer, RoutingTableEntry>();
+    private HashMap<Integer, Neighbor> neighbors = new HashMap<Integer, Neighbor>();
 
     public DVNode(int port, HashMap<Integer, Double> neighbors) throws SocketException {
-        this.port = port;
+        this.sourcePort = port;
         this.socket = new DatagramSocket(port);
-        this.neighbors = new HashMap<Integer, Neighbor>();
-        this.routingTable = new HashMap<Integer, RoutingTableEntry>();
 
         for(Map.Entry<Integer, Double> neighbor : neighbors.entrySet()) {
             Neighbor n = new Neighbor(neighbor.getKey(), neighbor.getValue());
@@ -55,38 +59,17 @@ public class DVNode {
         }
     }
 
-    // info we need to store about each neighbor to compute routing table
-    private class Neighbor {
-        public final int Port;
-        public double Weight;
-        public HashMap<Integer, RoutingTableEntry> Routes;
+    // *********************************************
+    // ***************** METHODS *******************
+    // *********************************************
 
-        public Neighbor(int port, double weight) {
-            Port = port;
-            Weight = (double)Math.round(weight * 1000)/1000; // round to 3 decimal places
-            Routes = new HashMap<Integer, RoutingTableEntry>();
-        }
-    }
-
-    // routing used by this node
-    private class RoutingTableEntry {
-        public final int ToPort;
-        public int NeighborPort;
-        public final double Weight;
-
-        public RoutingTableEntry(int toPort, int neighborPort, double weight) {
-            ToPort = toPort;
-            NeighborPort = neighborPort;
-            Weight = (double)Math.round(weight * 1000)/1000; // round to 3 decimal places
-        }
-    }
-
+    // set up the DVNode
     public void Initialize(boolean isLast) {
         // set up the routing table
         EnsureRoutingTableIsUpdated();
 
         // print the routing table
-        Printing.PrintRoutingTable(port, routingTable);
+        DvPrinting.PrintRoutingTable(sourcePort, routingTable);
 
         // start broadcast if we're last
         if (isLast) {
@@ -97,6 +80,7 @@ public class DVNode {
         ListenForUpdates();
     }
 
+    // listen for incoming udp messages
     private void ListenForUpdates() {
         // receive updates forever
         while (true) {
@@ -114,14 +98,15 @@ public class DVNode {
             int fromPort = receivedDatagram.getPort();
             String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
 
-            HandleUpdate(fromPort, msg);
+            HandleDvFromNeighbor(fromPort, msg);
         }
     }
 
-    private void HandleUpdate(int fromPort, String message) {
+    // handle a received udp message
+    private void HandleDvFromNeighbor(int fromPort, String message) {
 
         // print that we received
-        Printing.PrintRcvMessage(port, fromPort);
+        DvPrinting.PrintRcvMessage(sourcePort, fromPort);
 
         // if we're receiving a message from a non-neighbor, ignore it
         // note, this should never happen, just a safety check
@@ -153,7 +138,7 @@ public class DVNode {
 
         // update routing table - if it changed print and broadcast
         if (EnsureRoutingTableIsUpdated()) {
-            Printing.PrintRoutingTable(port, routingTable);
+            DvPrinting.PrintRoutingTable(sourcePort, routingTable);
             Broadcast();
         }
         else if (!sentBroadcast) { // we need to broadcast at least once or DV initialization fails
@@ -208,26 +193,19 @@ public class DVNode {
         return updated;
     }
 
-    private String ConstructMessageForNeighbor(int neighborPort) {
-
-        // I am defining the broadcast message as follows:
-        // <reachable-node1>,<next-node1>,<weight1> <reachable-node2>,<next-node2>,<weight2> ...
-
-        String message = "";
-        for (RoutingTableEntry entry : routingTable.values()) {
-            // only tell neighbor we can get to places that don't go through them
-            if (entry.NeighborPort != neighborPort && entry.ToPort != neighborPort){
-                message += entry.ToPort + "," + entry.NeighborPort + "," + entry.Weight + " ";
-            }
-        }
-        return message;
-    }
-
+    // Distance Vector broadcast of our routing table to all neighbors
     private void Broadcast() {
         for (int neighborPort : neighbors.keySet()) {
-            String message = ConstructMessageForNeighbor(neighborPort);
+
+            String message = MessageCreator.Broadcast(neighborPort, routingTable);
+
+            // if we have nothing to send, skip this neighbor
+            if (message == null) {
+                continue;
+            }
+
             ReliableSend(neighborPort, message);
-            Printing.PrintSendMessage(port, neighborPort);
+            DvPrinting.PrintSendMessage(sourcePort, neighborPort);
         }
 
         // mark that we have sent at least 1 broadcast
@@ -248,23 +226,79 @@ public class DVNode {
         }
     }
 
-    private static class Printing {
+    // *********************************************
+    // ************** HELPER CLASSES ***************
+    // *********************************************
+
+    // info we need to store about each neighbor to compute routing table
+    private class Neighbor {
+        public final int Port;
+        public double Weight;
+        public HashMap<Integer, RoutingTableEntry> Routes = new HashMap<Integer, RoutingTableEntry>();
+
+        public Neighbor(int port, double weight) {
+            Port = port;
+            Weight = (double)Math.round(weight * 1000)/1000; // round to 3 decimal places
+        }
+    }
+
+    // routing used by this node
+    private class RoutingTableEntry {
+        public final int ToPort;
+        public int NeighborPort;
+        public final double Weight;
+
+        public RoutingTableEntry(int toPort, int neighborPort, double weight) {
+            ToPort = toPort;
+            NeighborPort = neighborPort;
+            Weight = (double)Math.round(weight * 1000)/1000; // round to 3 decimal places
+        }
+    }
+
+    // defines the packet contents of each type of message
+    private static class MessageCreator {
+
+        public static String Broadcast(int neighborPort, HashMap<Integer, RoutingTableEntry> routingTable) {
+            // I am defining the broadcast message as follows:
+            // <reachable-node1>,<next-node1>,<weight1> <reachable-node2>,<next-node2>,<weight2> ...
+
+            String message = "";
+            for (RoutingTableEntry entry : routingTable.values()) {
+                // only tell neighbor we can get to places that don't go through them
+                if (entry.NeighborPort != neighborPort && entry.ToPort != neighborPort){
+                    message += entry.ToPort + "," + entry.NeighborPort + "," + entry.Weight + " ";
+                }
+            }
+
+            // if we have nothing to send to this neighbor, don't send
+            if (!message.endsWith(" ")) {
+                return null;
+            }
+            else {
+                return message.trim();
+            }
+        }
+
+    }
+
+    // defines what we print for the DV component
+    private static class DvPrinting {
 
         public static void PrintSendMessage(int sourceNodePort, int destNodePort) {
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " Message sent from Node " + sourceNodePort + " to Node " + destNodePort;
+            String toPrint = "[" + timestamp + "] Message sent from Node " + sourceNodePort + " to Node " + destNodePort;
             System.out.println(toPrint);
         }
 
         public static void PrintRcvMessage(int destNodePort, int sourceNodePort) {
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " Message received at Node " + destNodePort + " from Node " + sourceNodePort;
+            String toPrint = "[" + timestamp + "] Message received at Node " + destNodePort + " from Node " + sourceNodePort;
             System.out.println(toPrint);
         }
 
         public static void PrintRoutingTable(int nodePort, HashMap<Integer, RoutingTableEntry> routingTable) {
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " Node " + nodePort + " - Routing Table";
+            String toPrint = "[" + timestamp + "] Node " + nodePort + " - Routing Table";
             for (RoutingTableEntry entry : routingTable.values()) {
                 if (entry.ToPort == entry.NeighborPort) {
                     toPrint += "\nNode " + entry.ToPort + " -> (" + entry.Weight + ")";
