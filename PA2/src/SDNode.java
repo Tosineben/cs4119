@@ -40,7 +40,8 @@ public class SDNode {
 
     }
 
-    private Object udpLock = new Object();
+    private static final Object udpLock = new Object();
+
     private DatagramSocket socket;
     private final int sourcePort;
     private boolean sentBroadcast;
@@ -634,13 +635,6 @@ public class SDNode {
                 int fromPort = receivedDatagram.getPort();
                 String msg = new String(buffer, 0, receivedDatagram.getLength()).trim();
 
-                synchronized (udpLock) {
-                    new Thread(new ReceivedThread(fromPort, msg)).start();
-                    continue;
-                }
-
-                /*
-
                 // ignore messages from non-neighbors
                 if (!neighbors.containsKey(fromPort)){
                     continue;
@@ -648,16 +642,14 @@ public class SDNode {
 
                 Neighbor n = neighbors.get(fromPort);
 
-                // mark that we received from neighbor
-                n.SrNode.numReceivedSinceLastDeliver++;
-
-                // receiver simulates "dropped" packets based on neighbor loss rate
-                if (new Random().nextDouble() < n.LossRate) {
-                    continue;
-                }
-
                 // all packets start with packet number except special ACK packets
                 if (msg.startsWith("ACK")) {
+
+                    // receiver simulates "dropped" packets based on neighbor loss rate
+                    if (new Random().nextDouble() < n.LossRate) {
+                        continue;
+                    }
+
                     int packetNum;
                     try {
                         packetNum = Integer.parseInt(msg.split(",")[1]);
@@ -668,57 +660,18 @@ public class SDNode {
                     n.SrNode.HandleReceivedAck(packetNum);
                 }
                 else {
+
+                    // mark that we received from neighbor
+                    n.SrNode.numReceivedSinceLastDeliver++;
+
+                    // receiver simulates "dropped" packets based on neighbor loss rate
+                    if (new Random().nextDouble() < n.LossRate) {
+                        continue;
+                    }
+
                     Packet p = new Packet(msg, fromPort, sourcePort);
                     n.SrNode.HandleReceived(p);
                 }
-
-                */
-            }
-        }
-    }
-
-    private class ReceivedThread implements Runnable {
-
-        private int fromPort;
-        private String msg;
-
-        public ReceivedThread(int fromPort, String msg) {
-
-            this.fromPort = fromPort;
-            this.msg = msg;
-        }
-
-        @Override
-        public void run() {
-            // ignore messages from non-neighbors
-            if (!neighbors.containsKey(fromPort)){
-                return;
-            }
-
-            Neighbor n = neighbors.get(fromPort);
-
-            // mark that we received from neighbor
-            n.SrNode.numReceivedSinceLastDeliver++;
-
-            // receiver simulates "dropped" packets based on neighbor loss rate
-            if (new Random().nextDouble() < n.LossRate) {
-                return;
-            }
-
-            // all packets start with packet number except special ACK packets
-            if (msg.startsWith("ACK")) {
-                int packetNum;
-                try {
-                    packetNum = Integer.parseInt(msg.split(",")[1]);
-                }
-                catch (Exception e) {
-                    return; // this should never happen, invalid ACK message
-                }
-                n.SrNode.HandleReceivedAck(packetNum);
-            }
-            else {
-                Packet p = new Packet(msg, fromPort, sourcePort);
-                n.SrNode.HandleReceived(p);
             }
         }
     }
@@ -779,8 +732,6 @@ public class SDNode {
         private int rcvWindowBase;
         private HashMap<Integer, Packet> rcvdPackets = new HashMap<Integer, Packet>();
 
-        private Object lock = new Object();
-
         private class MessageDelivery implements Runnable {
 
             private int numReceived;
@@ -794,56 +745,49 @@ public class SDNode {
 
             @Override
             public void run() {
-                try {
-                    Thread.sleep(100);
-                }
-                catch (Exception e) {
-                    // swallow
-                }
-
-                for (Packet p : toDeliver) {
-                    MessageDeliveryFromSR(p.SourcePort, p.Data, numReceived);
-                    numReceived = 0;
+                synchronized (udpLock) {
+                    for (Packet p : toDeliver) {
+                        MessageDeliveryFromSR(p.SourcePort, p.Data, numReceived);
+                        numReceived = 0;
+                    }
                 }
             }
         }
 
         // GOOD TO GO
         public void HandleReceivedAck(int packetNum) {
-            synchronized (lock) {
 
-                if (ackedPackets.contains(packetNum) || packetNum < sendWindowBase || packetNum >= sendWindowBase + windowSize) {
-                    // note, we can assume sender/receiver windows are the same so that this will never happen
-                    // see this post: https://piazza.com/class#spring2013/csee4119/152
-                    return;
-                }
-
-                // mark the packet as ACKed
-                ackedPackets.add(packetNum);
-
-                // if this is the first packet in the window, shift window and send more packets
-                if (sendWindowBase == packetNum) {
-
-                    // shift the window up to the next unACKed packet
-                    while (ackedPackets.contains(sendWindowBase)) {
-                        sendWindowBase++;
-                    }
-
-                    // print the ACK2
-                    SrSenderPrinting.PrintAck2(packetNum, sendWindowBase, sendWindowBase + windowSize);
-
-                    // send all pending packets that are inside the new window
-                    while (!queuedPackets.isEmpty() && queuedPackets.get(0) < sendWindowBase + windowSize) {
-                        int nextPacketToSend = queuedPackets.remove(0);
-                        SendOnePacket(sendPackets.get(nextPacketToSend));
-                    }
-                }
-                else {
-                    // just print ACK1, don't move window or send anything new
-                    SrSenderPrinting.PrintAck1(packetNum);
-                }
-
+            if (ackedPackets.contains(packetNum) || packetNum < sendWindowBase || packetNum >= sendWindowBase + windowSize) {
+                // note, we can assume sender/receiver windows are the same so that this will never happen
+                // see this post: https://piazza.com/class#spring2013/csee4119/152
+                return;
             }
+
+            // mark the packet as ACKed
+            ackedPackets.add(packetNum);
+
+            // if this is the first packet in the window, shift window and send more packets
+            if (sendWindowBase == packetNum) {
+
+                // shift the window up to the next unACKed packet
+                while (ackedPackets.contains(sendWindowBase)) {
+                    sendWindowBase++;
+                }
+
+                // print the ACK2
+                SrSenderPrinting.PrintAck2(packetNum, sendWindowBase, sendWindowBase + windowSize);
+
+                // send all pending packets that are inside the new window
+                while (!queuedPackets.isEmpty() && queuedPackets.get(0) < sendWindowBase + windowSize) {
+                    int nextPacketToSend = queuedPackets.remove(0);
+                    SendOnePacket(sendPackets.get(nextPacketToSend));
+                }
+            }
+            else {
+                // just print ACK1, don't move window or send anything new
+                SrSenderPrinting.PrintAck1(packetNum);
+            }
+
         }
 
         // GOOD TO GO
@@ -854,6 +798,10 @@ public class SDNode {
                 // see this post: https://piazza.com/class#spring2013/csee4119/152
                 return;
             }
+
+            // send an ACK no matter what
+            UnreliableSend(payload.SourcePort, "ACK," + payload.Number);
+            SrReceiverPrinting.PrintSendAck(payload.Number);
 
             // if the packet is before our window or we've received it, discard it
             if (payload.Number < rcvWindowBase || rcvdPackets.containsKey(payload.Number)) {
@@ -870,14 +818,14 @@ public class SDNode {
                     List<Packet> toDeliver = new ArrayList<Packet>();
                     while (rcvdPackets.containsKey(rcvWindowBase)) {
                         Packet p = rcvdPackets.get(rcvWindowBase); // TODO should this be remove instead of get?
-                        MessageDeliveryFromSR(p.SourcePort, p.Data, numReceivedSinceLastDeliver);
-                        numReceivedSinceLastDeliver = 0;
+                        //MessageDeliveryFromSR(p.SourcePort, p.Data, numReceivedSinceLastDeliver);
+                        //numReceivedSinceLastDeliver = 0;
                         toDeliver.add(p);
                         rcvWindowBase++;
                     }
 
                     // deliver data and keep processing
-                    // new Thread(new MessageDelivery(toDeliver)).start();
+                    new Thread(new MessageDelivery(toDeliver)).start();
 
                     // print Receive2
                     SrReceiverPrinting.PrintReceive2(payload.Number, payload.Data, rcvWindowBase, rcvWindowBase + windowSize);
@@ -888,9 +836,6 @@ public class SDNode {
                 }
             }
 
-            // send an ACK no matter what
-            UnreliableSend(payload.SourcePort, "ACK," + payload.Number);
-            SrReceiverPrinting.PrintSendAck(payload.Number);
         }
 
         // GOOD TO GO
@@ -939,20 +884,18 @@ public class SDNode {
                         SendOnePacket(payload);
                     }
                 }
-
             }
+                // wait for all packets to be ACKed and check for timeouts
+                while (true) {
 
-            // wait for all packets to be ACKed and check for timeouts
-            while (true) {
+                    // wait 10 ms
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException e) {
+                        // if we get aborted, we're screwed
+                    }
 
-                // wait 10 ms
-                try {
-                    Thread.sleep(10);
-                } catch (InterruptedException e) {
-                    // if we get aborted, we're screwed
-                }
-
-                synchronized (udpLock) {
+                    synchronized (udpLock) {
 
                     // if nothing is in flight, we're done!
                     if (inFlightPacketTimes.isEmpty()) {
@@ -1013,19 +956,19 @@ public class SDNode {
 
         public static void PrintStartSending(int nodePort) {
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " start " + nodePort;
+            String toPrint = "[" + timestamp + "] start " + nodePort;
             System.out.println(toPrint);
         }
 
         public static void PrintFinishSending(int nodePort) {
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " finish " + nodePort;
+            String toPrint = "[" + timestamp + "] finish " + nodePort;
             System.out.println(toPrint);
         }
 
         public static void PrintFinishReceiving(int nodePort, int totalNumberPacketsSent, double lossRate) {
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " " + nodePort + " " + totalNumberPacketsSent + " " + lossRate;
+            String toPrint = "[" + timestamp + "] " + nodePort + " " + totalNumberPacketsSent + " " + lossRate;
             System.out.println(toPrint);
         }
 
@@ -1041,19 +984,19 @@ public class SDNode {
 
         public static void PrintSendMessage(int sourceNodePort, int destNodePort) {
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " Message sent from Node " + sourceNodePort + " to Node " + destNodePort;
+            String toPrint = "[" + timestamp + "] Message sent from Node " + sourceNodePort + " to Node " + destNodePort;
             System.out.println(toPrint);
         }
 
         public static void PrintRcvMessage(int destNodePort, int sourceNodePort) {
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " Message received at Node " + destNodePort + " from Node " + sourceNodePort;
+            String toPrint = "[" + timestamp + "] Message received at Node " + destNodePort + " from Node " + sourceNodePort;
             System.out.println(toPrint);
         }
 
         public static void PrintRoutingTable(int nodePort, HashMap<Integer, RoutingTableEntry> routingTable) {
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " Node " + nodePort + " - Routing Table";
+            String toPrint = "[" + timestamp + "] Node " + nodePort + " - Routing Table";
             for (RoutingTableEntry entry : routingTable.values()) {
                 if (entry.ToPort == entry.NeighborPort) {
                     toPrint += "\nNode " + entry.ToPort + " -> (" + entry.Weight + ")";
@@ -1071,28 +1014,44 @@ public class SDNode {
     private static class SrSenderPrinting {
 
         public static void PrintSendPacket(int packetNum, String data) {
+            if (!PrintSr) {
+                return;
+            }
+
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " packet-" + packetNum + " " + data + " sent";
+            String toPrint = "[" + timestamp + "] packet-" + packetNum + " " + data + " sent";
             System.out.println(toPrint);
         }
 
         // Receive Ack-1 refers to receiving the ack but no window advancement occurs
         public static void PrintAck1(int packetNum) {
+            if (!PrintSr) {
+                return;
+            }
+
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " ACK-" + packetNum + " received";
+            String toPrint = "[" + timestamp + "] ACK-" + packetNum + " received";
             System.out.println(toPrint);
         }
 
         // window advancement occurs for Receive Ack-2, with starting/ending packet number of the window
         public static void PrintAck2(int packetNum, int windowStart, int windowEnd) {
+            if (!PrintSr) {
+                return;
+            }
+
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " ACK-" + packetNum + " received; window = [" + windowStart + "," + windowEnd + "]";
+            String toPrint = "[" + timestamp + "] ACK-" + packetNum + " received; window = [" + windowStart + "," + windowEnd + "]";
             System.out.println(toPrint);
         }
 
         public static void PrintTimeout(int packetNum) {
+            if (!PrintSr) {
+                return;
+            }
+
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " packet-" + packetNum + " timeout";
+            String toPrint = "[" + timestamp + "] packet-" + packetNum + " timeout";
             System.out.println(toPrint);
         }
 
@@ -1102,29 +1061,48 @@ public class SDNode {
     private static class SrReceiverPrinting {
 
         public static void PrintReceive1(int packetNum, String data) {
+            if (!PrintSr) {
+                return;
+            }
+
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " packet-" + packetNum + " " + data + " received";
+            String toPrint = "[" + timestamp + "] packet-" + packetNum + " " + data + " received";
             System.out.println(toPrint);
         }
 
         public static void PrintReceive2(int packetNum, String data, int windowStart, int windowEnd) {
+            if (!PrintSr) {
+                return;
+            }
+
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " packet-" + packetNum + " " + data + " received; window = [" + windowStart + "," + windowEnd + "]";
+            String toPrint = "[" + timestamp + "] packet-" + packetNum + " " + data + " received; window = [" + windowStart + "," + windowEnd + "]";
             System.out.println(toPrint);
         }
 
         public static void PrintSendAck(int packetNum) {
+            if (!PrintSr) {
+                return;
+            }
+
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " ACK-" + packetNum + " sent";
+            String toPrint = "[" + timestamp + "] ACK-" + packetNum + " sent";
             System.out.println(toPrint);
         }
 
         public static void PrintDiscardPacket(int packetNum, String data) {
+            if (!PrintSr) {
+                return;
+            }
+
             long timestamp = Calendar.getInstance().getTimeInMillis();
-            String toPrint = timestamp + " packet-" + packetNum + " " + data + " discarded";
+            String toPrint = "[" + timestamp + "] packet-" + packetNum + " " + data + " discarded";
             System.out.println(toPrint);
         }
 
     }
+
+    // TODO remove
+    private static boolean PrintSr = false;
 
 }
